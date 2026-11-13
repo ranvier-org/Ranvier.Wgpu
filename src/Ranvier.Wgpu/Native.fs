@@ -102,7 +102,4 @@ module internal WgpuNativeInterop =
     extern nativeint wgpuDeviceGetNativeMetalDevice(nativeint device)
 
     [<DllImport(WgpuDllName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)>]
-    extern nativeint wgpuQueueGetNativeMetalCommandQueue(nativeint queue)
-
-    [<DllImport(WgpuDllName, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)>]
     extern nativeint wgpuTextureGetNativeMetalTexture(nativeint texture)

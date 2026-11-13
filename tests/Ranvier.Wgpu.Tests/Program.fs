@@ -214,6 +214,15 @@ let wgpuSdlTests =
                     Expect.isGreaterThan cg 60uy "3D sphere green channel"
                     Expect.equal ca 255uy "3D sphere alpha"
 
+                    printfn
+                        "[Ranvier.Wgpu.Tests] Backend=%s Adapter=%s Mode=%A ZeroCopy=%b Hardware=%b ReadbackMs=%.2f"
+                        wgpu.BackendName
+                        wgpu.AdapterName
+                        surface.Mode
+                        surface.IsZeroCopyGpu
+                        surface.IsHardwareComposited
+                        metrics.ReadbackMs
+
                     // 4) Hardware zero-copy assertions when D3D11 swap chain is active on Windows
                     if
                         OperatingSystem.IsWindows ()
@@ -236,25 +245,26 @@ let wgpuSdlTests =
             <| fun () ->
                 onHostThread (fun () ->
                     use window =
-                        Window.Create ("WgpuSdlSurface Lifecycle Test", 240, 180, hidden = true)
+                        Window.Create ("WgpuSdlSurface Lifecycle Test", 320, 240, hidden = true)
 
                     window.Host.SetDeviceScale 1.0f
-                    window.Host.Resize (240, 180)
+                    window.Host.Resize (320, 240)
 
                     window.Host.Document.body.innerHTML <-
                         """<style>
-                            html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #101010; overflow: hidden; }
-                            #vp { width: 100%; height: 100%; }
+                            html, body { margin: 0; padding: 0; width: 320px; height: 240px; background: #101010; overflow: hidden; }
+                            .vp-small { width: 160px; height: 120px; }
+                            .vp-large { width: 300px; height: 220px; }
                             #pin { position: absolute; left: 10px; top: 10px; width: 30px; height: 30px; background: #ff00ff; }
                         </style>
-                        <div id="vp" style="opacity:1"><div id="pin"></div></div>"""
+                        <div id="vp" class="vp-small" style="opacity:1"><div id="pin"></div></div>"""
 
                     let vp = window.Host.Document.getElementById "vp"
                     let pin = window.Host.Document.getElementById "pin"
 
                     use wgpu =
                         window
-                        |> WgpuSdlSurface.createContextSized 240 180
+                        |> WgpuSdlSurface.createContextSized 160 120
 
                     use boxMesh =
                         Primitives.unitBox () |> WgpuContext.uploadMesh
@@ -298,7 +308,7 @@ let wgpuSdlTests =
                     let surface = capturedSurface.Value
                     window.Present ()
 
-                    // Mutate HTML overlay WITHOUT re-rendering 3D: 3D teal quad must stay intact!
+                    // Mutate HTML overlay WITHOUT re-rendering 3D: 3D teal quad must stay intact inside 160x120!
                     pin.setAttribute ("style", "position:absolute;left:10px;top:10px;width:30px;height:30px;background:#ffff00")
                     window.Present ()
                     let afterDomOnly = window.ReadPixels ()
@@ -309,21 +319,31 @@ let wgpuSdlTests =
                     Expect.isGreaterThan pg 220uy "updated HTML pin G (yellow)"
                     Expect.isLessThan pb 35uy "updated HTML pin B (yellow)"
 
-                    let struct (tr, tg, tb, _) = rgbaAt afterDomOnly 120 90
+                    let struct (tr, tg, tb, _) = rgbaAt afterDomOnly 80 60
                     Expect.isLessThan tr 60uy "retained 3D center R"
                     Expect.isGreaterThan tg 160uy "retained 3D center G"
                     Expect.isGreaterThan tb 150uy "retained 3D center B"
 
-                    // Resize window + surface and render at new dimensions
-                    window.Host.Resize (300, 220)
+                    // Pixel (240, 180) is outside the 160x120 viewport before resize (#101010 dark background)
+                    let struct (bgR, bgG, bgB, _) = rgbaAt afterDomOnly 240 180
+                    Expect.isLessThan bgR 40uy "outside viewport R before resize"
+                    Expect.isLessThan bgG 40uy "outside viewport G before resize"
+                    Expect.isLessThan bgB 40uy "outside viewport B before resize"
+
+                    // Resize DOM element + WgpuSdlSurface to 300x220 and render at new dimensions
+                    vp.setAttribute ("class", "vp-large")
                     surface |> WgpuSdlSurface.resize 300 220
                     Expect.equal surface.Width 300 "resized surface width"
                     Expect.equal surface.Height 220 "resized surface height"
                     pass |> WgpuSdlSurface.render surface |> ignore
                     window.Present ()
-                    let struct (rw, rh, _) = window.ReadPixels ()
-                    Expect.equal rw 300 "readback width after resize"
-                    Expect.equal rh 220 "readback height after resize"
+                    let afterResize = window.ReadPixels ()
+
+                    // Pixel (240, 180) is now covered by the expanded 300x220 3D teal surface!
+                    let struct (expR, expG, expB, _) = rgbaAt afterResize 240 180
+                    Expect.isLessThan expR 60uy "expanded 3D surface R at (240, 180)"
+                    Expect.isGreaterThan expG 160uy "expanded 3D surface G at (240, 180)"
+                    Expect.isGreaterThan expB 150uy "expanded 3D surface B at (240, 180)"
 
                     // Disposing the lent subscription runs user cleanup, unbinds cleanly, and restores original style!
                     lentSub.Dispose ()

@@ -1027,17 +1027,29 @@ module private MacMetalBridge =
                 else
                     try
                         let mtlDev = wgpuDeviceGetNativeMetalDevice context.DeviceHandle
-                        let mtlQ = wgpuQueueGetNativeMetalCommandQueue context.QueueHandle
 
-                        if mtlDev = 0n || mtlQ = 0n then
+                        let probeTex =
+                            if mtlDev <> 0n then
+                                wgpuTextureGetNativeMetalTexture context.ResolveTextureHandle
+                            else
+                                0n
+
+                        if mtlDev = 0n || probeTex = 0n then
                             NativeLibrary.Free ioLib
                             ValueNone
                         else
-                            let presenter =
-                                new MetalIOSurfacePresenter (context, mtlSurface, mtlDev, mtlQ, ioLib)
+                            let selNewQueue = sel_registerName "newCommandQueue"
+                            let mtlQ = msgSend_IntPtr (mtlDev, selNewQueue)
 
-                            presenter.Resize (initialWidth, initialHeight)
-                            ValueSome presenter
+                            if mtlQ = 0n then
+                                NativeLibrary.Free ioLib
+                                ValueNone
+                            else
+                                let presenter =
+                                    new MetalIOSurfacePresenter (context, mtlSurface, mtlDev, mtlQ, ioLib)
+
+                                presenter.Resize (initialWidth, initialHeight)
+                                ValueSome presenter
                     with _ ->
                         if ioLib <> 0n then
                             NativeLibrary.Free ioLib
@@ -1054,6 +1066,7 @@ module private MacMetalBridge =
             ensureBuffers w h
 
             let metrics = context.RenderGpuPass pass
+            let _ = wgpuDevicePoll (context.DeviceHandle, WGPU_TRUE, 0n)
 
             let srcMtlTex = wgpuTextureGetNativeMetalTexture context.ResolveTextureHandle
             let slot = ringIndex % ioSurfaces.Length
@@ -1085,6 +1098,9 @@ module private MacMetalBridge =
             if not disposed then
                 disposed <- true
                 releaseBuffers ()
+
+                if mtlQueue <> 0n then
+                    msgSend_Void (mtlQueue, selRelease)
 
                 if ioLib <> 0n then
                     NativeLibrary.Free ioLib
