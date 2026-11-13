@@ -1,5 +1,5 @@
 ---
-last_commit_released: de74dbbc0d4bfd5faf079ecc632e193047aea9bb
+last_commit_released: eaa4328e7d956c65460b9bed9e16c04da2aa814d
 pre_release: alpha
 depends_on:
   - ../Ranvier.Wgpu/
@@ -15,6 +15,18 @@ updaters:
 # Changelog
 
 This changelog is generated from conventional commits by [EasyBuild.ShipIt](https://github.com/easybuild-org/EasyBuild.ShipIt).
+
+## 0.1.0-alpha.2 - 2026-11-13
+
+### 🐞 Bug Fixes
+
+* *(sdl)* Use owned Metal blit queue on macOS and pixel-verify element resize in tests ([eaa4328](https://github.com/ranvier-org/Ranvier.Wgpu/commit/eaa4328e7d956c65460b9bed9e16c04da2aa814d))
+
+### 🔗 Dependencies
+
+* `src/Ranvier.Wgpu` updated to 0.1.0-alpha.2
+
+<strong><small>[View changes on Github](https://github.com/ranvier-org/Ranvier.Wgpu/compare/de74dbbc0d4bfd5faf079ecc632e193047aea9bb..eaa4328e7d956c65460b9bed9e16c04da2aa814d)</small></strong>
 
 ## 0.1.0-alpha.1 - 2026-11-13
 
