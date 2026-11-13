@@ -1,0 +1,86 @@
+name: Publish NuGet
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Completed main CI run ID whose nuget-packages artifact should be published to NuGet.org
+        required: true
+        type: string
+  workflow_run:
+    workflows: [CI]
+    branches: [main, master]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nuget-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.run_id != '') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.name == 'CI' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       (startsWith(github.event.workflow_run.head_commit.message, 'chore: release ') ||
+        startsWith(github.event.workflow_run.head_commit.message, 'chore(release): ')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Verify workflow_dispatch target CI run succeeded on main
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_RUN: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          meta=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TARGET_RUN" --jq '[.name, .head_branch, .conclusion] | @tsv')
+          echo "Target run metadata: $meta"
+          test "$meta" = $'CI\tmain\tsuccess'
+      - uses: actions/download-artifact@v8
+        with:
+          name: nuget-packages
+          path: bin
+          run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Authenticate to NuGet with trusted publishing
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ vars.NUGET_USER || 'shayan.habibi' }}
+      - name: Publish packages validated by CI
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          pkgs=(bin/*.nupkg)
+          test "${#pkgs[@]}" -gt 0
+          # Push Ranvier.Wgpu first so Ranvier.Wgpu.Sdl's dependency is already present
+          for pkg in "${pkgs[@]}"; do
+            if [[ "$(basename "$pkg")" == Ranvier.Wgpu.[0-9]* ]]; then
+              dotnet nuget push "$pkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+            fi
+          done
+          for pkg in "${pkgs[@]}"; do
+            if [[ "$(basename "$pkg")" != Ranvier.Wgpu.[0-9]* ]]; then
+              dotnet nuget push "$pkg" --source https://api.nuget.org/v3/index.json --api-key "$NUGET_API_KEY" --skip-duplicate
+            fi
+          done

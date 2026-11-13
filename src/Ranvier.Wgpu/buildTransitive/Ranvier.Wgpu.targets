@@ -1,0 +1,18 @@
+<Project>
+  <!-- Automatically stage the host OS/architecture wgpu_native shared library for portable (non-RID) builds and test runs. -->
+  <PropertyGroup>
+    <_RanvierWgpuArch Condition="$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) == 'Arm64'">arm64</_RanvierWgpuArch>
+    <_RanvierWgpuArch Condition="'$(_RanvierWgpuArch)' == ''">x64</_RanvierWgpuArch>
+    <_RanvierWgpuHostNative Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(MSBuildThisFileDirectory)..\runtimes\win-$(_RanvierWgpuArch)\native\wgpu_native.dll</_RanvierWgpuHostNative>
+    <_RanvierWgpuHostNative Condition="$([MSBuild]::IsOSPlatform('Linux'))">$(MSBuildThisFileDirectory)..\runtimes\linux-$(_RanvierWgpuArch)\native\libwgpu_native.so</_RanvierWgpuHostNative>
+    <_RanvierWgpuHostNative Condition="$([MSBuild]::IsOSPlatform('OSX'))">$(MSBuildThisFileDirectory)..\runtimes\osx-$(_RanvierWgpuArch)\native\libwgpu_native.dylib</_RanvierWgpuHostNative>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == '' and '$(_RanvierWgpuHostNative)' != '' and Exists('$(_RanvierWgpuHostNative)')">
+    <None Include="$(_RanvierWgpuHostNative)"
+          Link="%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest"
+          Visible="false" />
+  </ItemGroup>
+</Project>

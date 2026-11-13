@@ -1,0 +1,12 @@
+bin/
+obj/
+artifacts/
+samples/**/artifacts/
+src/Ranvier.Wgpu/runtimes/
+.vs/
+.idea/
+.ionide/
+*.user
+*.suo
+*.binlog
+Local.Build.props

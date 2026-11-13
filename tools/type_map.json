@@ -1,0 +1,53 @@
+{
+  "dllName": "wgpu_native",
+  "namespace": "Ranvier.Wgpu.Native",
+  "primitives": {
+    "void": "unit",
+    "char": "byte",
+    "int": "int32",
+    "int32_t": "int32",
+    "uint8_t": "byte",
+    "uint16_t": "uint16",
+    "uint32_t": "uint32",
+    "int64_t": "int64",
+    "uint64_t": "uint64",
+    "size_t": "unativeint",
+    "uintptr_t": "unativeint",
+    "float": "float32",
+    "double": "float",
+    "WGPUBool": "uint32",
+    "WGPUFlags": "uint64",
+    "WGPUSubmissionIndex": "uint64"
+  },
+  "fsharpKeywords": {
+    "type": "Type",
+    "module": "Module",
+    "function": "Function",
+    "begin": "Begin",
+    "end": "End",
+    "default": "Default",
+    "global": "Global",
+    "namespace": "Namespace",
+    "open": "Open",
+    "let": "Let",
+    "in": "In",
+    "to": "To",
+    "val": "Val",
+    "with": "With",
+    "member": "Member",
+    "override": "Override",
+    "base": "Base",
+    "null": "NullPtr",
+    "void": "VoidPtr",
+    "params": "Params",
+    "fixed": "Fixed",
+    "inline": "Inline"
+  },
+  "structOverrides": {
+    "WGPUNativeDisplayHandle": [
+      ["Type", "uint32"],
+      ["DataPointer", "nativeint"],
+      ["DataScreen", "int32"]
+    ]
+  }
+}

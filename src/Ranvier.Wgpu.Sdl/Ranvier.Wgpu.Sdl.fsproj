@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Ranvier.Wgpu.Sdl</RootNamespace>
+    <AssemblyName>Ranvier.Wgpu.Sdl</AssemblyName>
+    <PackageId>Ranvier.Wgpu.Sdl</PackageId>
+    <PackageId Condition="'$(RanvierTrace)' == 'true'">Ranvier.Wgpu.Sdl.Traced</PackageId>
+    <Version>0.0.0</Version>
+    <Title>Ranvier.Wgpu.Sdl</Title>
+    <Description>Opt-in zero-copy GPU texture bridge binding Ranvier.Wgpu 3D scenes directly onto Ranvier.View.WebCore.Sdl DOM elements with natural HTML/CSS/SVG overlay compositing.</Description>
+    <Description Condition="'$(RanvierTrace)' == 'true'">The traced build of Ranvier.Wgpu.Sdl, depending on Ranvier.View.WebCore.Sdl.Traced.</Description>
+    <PackageTags>ranvier;fsharp;webgpu;wgpu;3d;sdl;webcore;zero-copy;native</PackageTags>
+    <IsPackable>true</IsPackable>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>true</EnableAotAnalyzer>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <WarnOn>$(WarnOn);3390</WarnOn>
+    <NoWarn>$(NoWarn);FS0009;FS0051</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="WgpuSdlSurface.fs" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\brand\icon\ranvier-icon.png" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Ranvier.Wgpu\Ranvier.Wgpu.fsproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Ranvier.View.WebCore.Sdl$(RanvierPackageSuffix)" Version="0.1.0-rc.14" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Canonical FSharp.Core floor aligned with Ranvier.View.WebCore.Sdl. -->
+    <PackageReference Update="FSharp.Core" Version="10.1.401" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(RanvierTrace)' == 'true'">
+    <AssemblyMetadata Include="RanvierTrace" Value="true" />
+  </ItemGroup>
+
+</Project>
