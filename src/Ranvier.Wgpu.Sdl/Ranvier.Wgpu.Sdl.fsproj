@@ -33,7 +33,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Ranvier.View.WebCore.Sdl$(RanvierPackageSuffix)" Version="0.1.0-rc.14" />
+    <PackageReference Include="Ranvier.View.WebCore.Sdl$(RanvierPackageSuffix)" Version="0.1.0" />
   </ItemGroup>
 
   <ItemGroup>

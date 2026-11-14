@@ -15,7 +15,6 @@ open Ranvier.D5
 open Ranvier.D5.View
 open Ranvier.View
 open Ranvier.View.Dom
-open Ranvier.View.Sugar
 open Ranvier.View.WebCore
 open Ranvier.View.WebCore.Sdl
 open Ranvier.Wgpu
