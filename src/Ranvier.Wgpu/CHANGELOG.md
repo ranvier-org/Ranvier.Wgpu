@@ -1,5 +1,5 @@
 ---
-last_commit_released: eaa4328e7d956c65460b9bed9e16c04da2aa814d
+last_commit_released: 9891fe191cca8716b31691bfc33afe66284fad67
 updaters:
   - regex:
       file: Ranvier.Wgpu.fsproj
@@ -12,6 +12,14 @@ updaters:
 # Changelog
 
 This changelog is generated from conventional commits by [EasyBuild.ShipIt](https://github.com/easybuild-org/EasyBuild.ShipIt).
+
+## 0.1.0 - 2026-11-14
+
+### 🐞 Bug Fixes
+
+* *(deps)* Build against the stable Ranvier cohort and release stable versions (#1) ([9891fe1](https://github.com/ranvier-org/Ranvier.Wgpu/commit/9891fe191cca8716b31691bfc33afe66284fad67))
+
+<strong><small>[View changes on Github](https://github.com/ranvier-org/Ranvier.Wgpu/compare/eaa4328e7d956c65460b9bed9e16c04da2aa814d..9891fe191cca8716b31691bfc33afe66284fad67)</small></strong>
 
 ## 0.1.0-alpha.2 - 2026-11-13
 

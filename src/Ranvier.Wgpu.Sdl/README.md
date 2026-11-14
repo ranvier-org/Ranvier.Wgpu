@@ -5,7 +5,7 @@ Opt-in zero-copy GPU texture bridge binding [`Ranvier.Wgpu`](https://www.nuget.o
 ## Install
 
 ```sh
-dotnet add package Ranvier.Wgpu.Sdl --version 0.1.0-alpha.2
+dotnet add package Ranvier.Wgpu.Sdl --version 0.1.0
 ```
 
 Use `Ranvier.Wgpu.Sdl.Traced` when building against `Ranvier.View.WebCore.Sdl.Traced`.
