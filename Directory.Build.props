@@ -13,7 +13,7 @@
     <Authors>shayanhabibi</Authors>
     <Copyright>Copyright (c) 2026 Shayan Habibi</Copyright>
     <PackageIcon>ranvier-icon.png</PackageIcon>
-    <PackageReleaseNotes>Experimental alpha release. The API may change before 1.0.</PackageReleaseNotes>
+    <PackageReleaseNotes>Pre-1.0 release. The API may change before 1.0.</PackageReleaseNotes>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <IncludeSymbols>false</IncludeSymbols>

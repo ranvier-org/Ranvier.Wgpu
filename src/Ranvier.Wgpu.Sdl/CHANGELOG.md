@@ -1,6 +1,5 @@
 ---
 last_commit_released: eaa4328e7d956c65460b9bed9e16c04da2aa814d
-pre_release: alpha
 depends_on:
   - ../Ranvier.Wgpu/
 updaters:
