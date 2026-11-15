@@ -34,6 +34,17 @@ use surface = viewportEl |> WgpuSdlSurface.bind window wgpu
 let metrics = pass |> WgpuSdlSurface.render surface
 ```
 
+## Requirements, Limits and Custom Shading
+
+[`src/Ranvier.Wgpu/README.md`](src/Ranvier.Wgpu/README.md) lists what a consumer needs to know before building on
+the engine:
+
+- **SDK floor:** `FSharp.Core` 10.1.401, which ships with .NET SDK 10.0.401. An older SDK needs
+  `<PackageReference Update="FSharp.Core" Version="10.1.401" />`.
+- **Limits:** no textures, lines are a line list, discs and alpha-blended batches are not depth-sorted.
+- **Custom shading:** named extension points (`Shaders.composeScene`), a block of user uniforms
+  (`WgpuContext.SetUserUniforms`), and `WgpuContext.ValidateWgsl` to check WGSL in a test without a window.
+
 ## Repository Layout
 
 ```text

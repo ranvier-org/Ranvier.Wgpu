@@ -1,13 +1,94 @@
 namespace Ranvier.Wgpu
 
+open System
+open System.Collections.Generic
+open System.Text
+open System.Text.RegularExpressions
+
+/// <summary>
+/// Raised when WGSL given to a <c>WgpuContext</c> does not compile, lacks a required entry point, or does not fit
+/// the scene pipelines. The message is the WGSL compiler's or the pipeline validator's own text.
+/// </summary>
+[<Sealed>]
+type WgslException(message: string) =
+    inherit Exception(message)
+
+/// <summary>
+/// Named places in the stock scene shader where <c>Shaders.composeScene</c> inserts a consumer's WGSL.
+/// Each case lists the names that are in scope at that place.
+/// </summary>
+[<RequireQualifiedAccess; Struct>]
+type SceneShaderHook =
+    /// <summary>
+    /// Module scope, before <c>vs_main</c>: functions, structs and constants. In scope: the scene uniforms
+    /// <c>u</c>, the user uniforms <c>user</c>, <c>VsIn</c> and <c>VsOut</c>.
+    /// </summary>
+    | Declarations
+    /// <summary>
+    /// Extra members of <c>VsOut</c>, one per line and each ending in a comma. The stock members use locations
+    /// 0 to 4, so start at <c>@location(5)</c>.
+    /// </summary>
+    | Varyings
+    /// <summary>
+    /// First statements of <c>vs_main</c>. In scope: <c>in: VsIn</c>. The code may return a complete
+    /// <c>VsOut</c> to replace the stock vertex stage for some instances.
+    /// </summary>
+    | VertexBegin
+    /// <summary>
+    /// Last statements of <c>vs_main</c>, before <c>return out;</c>. In scope: <c>in</c>, <c>model</c>,
+    /// <c>worldPos4</c>, <c>worldNormal</c>, the model's axes <c>c0</c>, <c>c1</c>, <c>c2</c>, and the mutable
+    /// <c>out: VsOut</c>. Assign the members added through <c>Varyings</c> here.
+    /// </summary>
+    | VertexEnd
+    /// <summary>
+    /// Statements of <c>fs_main</c> that run after section-plane clipping and before the stock shading. In
+    /// scope: <c>in: VsOut</c>, <c>isFront</c>, <c>flags</c>. The code may return a premultiplied colour or
+    /// <c>discard</c>.
+    /// </summary>
+    | FragmentBegin
+    /// <summary>
+    /// Statements of <c>fs_main</c> that run after the stock lighting and before the section contour and tone
+    /// mapping. In scope: everything from <c>FragmentBegin</c>, <c>alpha</c>, and the mutable linear colour
+    /// <c>lit</c>.
+    /// </summary>
+    | FragmentLit
+
+    override this.ToString() =
+        match this with
+        | Declarations -> "Declarations"
+        | Varyings -> "Varyings"
+        | VertexBegin -> "VertexBegin"
+        | VertexEnd -> "VertexEnd"
+        | FragmentBegin -> "FragmentBegin"
+        | FragmentLit -> "FragmentLit"
+
+/// <summary>Which pipelines of a context take their entry points from custom WGSL rather than the stock shader.</summary>
+[<Struct>]
+type internal SceneEntryPlan =
+    {
+        CustomPick: bool
+        CustomLines: bool
+        CustomDiscs: bool
+        CustomDiscPick: bool
+    }
+
+    override _.ToString() =
+        "SceneEntryPlan"
+
 /// <summary>Built-in runtime-compiled WGSL scene, hairline, billboard-disc, and GPU-picking shaders.</summary>
 module Shaders =
     /// <summary>
-    /// Default WGSL shader module emitting premultiplied sRGB color attachments (`fs_main`, `fs_line`, `fs_disc`)
-    /// plus `RGBA32Uint` 1x1 hardware picking (`fs_pick`, `fs_disc_pick`).
+    /// Number of <c>vec4&lt;f32&gt;</c> slots in the user uniform block bound at <c>@group(0) @binding(1)</c>
+    /// and written with <c>WgpuContext.SetUserUniforms</c>.
     /// </summary>
     [<Literal>]
-    let DefaultSceneWgsl =
+    let UserUniformSlots = 16
+
+    // The stock shader is kept as the segments between its extension points. `DefaultSceneWgsl` joins them with
+    // nothing in between, and `composeScene` joins them with the consumer's code.
+
+    [<Literal>]
+    let private SceneHead =
         """
 struct SceneUniforms {
     viewProj: mat4x4<f32>,
@@ -22,6 +103,14 @@ struct SceneUniforms {
 
 @group(0) @binding(0)
 var<uniform> u: SceneUniforms;
+
+// Application data written with WgpuContext.SetUserUniforms. Every slot is zero until it is written.
+struct UserUniforms {
+    slots: array<vec4<f32>, 16>,
+};
+
+@group(0) @binding(1)
+var<uniform> user: UserUniforms;
 
 struct VsIn {
     @location(0) localPos: vec3<f32>,
@@ -43,11 +132,23 @@ struct VsOut {
     @location(2) colorRoughness: vec4<f32>,
     @location(3) opacityEmissive: vec2<f32>,
     @location(4) @interpolate(flat) pickFlags: vec2<u32>,
-};
+"""
 
-@vertex
+    [<Literal>]
+    let private SceneAfterVaryings =
+        """};
+
+"""
+
+    [<Literal>]
+    let private SceneVertexOpen =
+        """@vertex
 fn vs_main(in: VsIn) -> VsOut {
-    let model = mat4x4<f32>(in.modelCol0, in.modelCol1, in.modelCol2, in.modelCol3);
+"""
+
+    [<Literal>]
+    let private SceneVertexBody =
+        """    let model = mat4x4<f32>(in.modelCol0, in.modelCol1, in.modelCol2, in.modelCol3);
     let worldPos4 = model * vec4<f32>(in.localPos, 1.0);
 
     // Exact inverse-transpose normal via 3x3 cofactor matrix (handles non-uniform BIM scales + rotations)
@@ -69,7 +170,11 @@ fn vs_main(in: VsIn) -> VsOut {
     out.colorRoughness = vec4<f32>(in.vertexColor.rgb * in.colorRoughness.rgb, in.colorRoughness.a);
     out.opacityEmissive = vec2<f32>(in.vertexColor.a * in.opacityEmissive.x, in.opacityEmissive.y);
     out.pickFlags = in.pickFlags;
-    return out;
+"""
+
+    [<Literal>]
+    let private SceneFragmentOpen =
+        """    return out;
 }
 
 @fragment
@@ -82,7 +187,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) isFront: bool) -> @location(0) vec4
         discard;
     }
 
-    let alpha = clamp(in.opacityEmissive.x, 0.0, 1.0);
+"""
+
+    [<Literal>]
+    let private SceneFragmentShading =
+        """    let alpha = clamp(in.opacityEmissive.x, 0.0, 1.0);
     if (alpha <= 0.002) {
         discard;
     }
@@ -129,7 +238,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) isFront: bool) -> @location(0) vec4
         }
     }
 
-    if (sectionActive && u.sectionStyle.w > 0.0 && clipDist < u.sectionStyle.w) {
+"""
+
+    [<Literal>]
+    let private SceneTail =
+        """    if (sectionActive && u.sectionStyle.w > 0.0 && clipDist < u.sectionStyle.w) {
         let edgeT = 1.0 - (clipDist / u.sectionStyle.w);
         lit = mix(lit, u.sectionStyle.xyz, edgeT * 0.88);
     }
@@ -384,3 +497,112 @@ fn fs_disc_pick(in: DiscVsOut) -> @location(0) vec4<u32> {
     );
 }
 """
+
+    /// <summary>
+    /// Default WGSL shader module emitting premultiplied sRGB color attachments (`fs_main`, `fs_line`, `fs_disc`)
+    /// plus `RGBA32Uint` 1x1 hardware picking (`fs_pick`, `fs_disc_pick`).
+    /// </summary>
+    /// <remarks>
+    /// To change the shading, pass code for the named extension points to <c>composeScene</c> rather than
+    /// editing this text: the text may change between versions, and the extension points keep their names.
+    /// </remarks>
+    [<Literal>]
+    let DefaultSceneWgsl =
+        SceneHead
+        + SceneAfterVaryings
+        + SceneVertexOpen
+        + SceneVertexBody
+        + SceneFragmentOpen
+        + SceneFragmentShading
+        + SceneTail
+
+    /// <summary>
+    /// Builds the stock scene shader with a consumer's WGSL inserted at named extension points, ready to pass
+    /// as the custom WGSL of a <c>WgpuContext</c>.
+    /// </summary>
+    /// <remarks>
+    /// Code given twice for one hook is inserted in the order given. With no hooks the result is
+    /// <c>DefaultSceneWgsl</c>. The line and disc shaders are not touched, so line and disc batches draw as they
+    /// do on a stock context. <c>WgpuContext.ValidateWgsl</c> checks the result without opening a window.
+    /// </remarks>
+    /// <exception cref="T:System.ArgumentNullException">A hook's code is null.</exception>
+    let composeScene (hooks: seq<SceneShaderHook * string>) : string =
+        let given = Seq.toArray hooks
+        let text = StringBuilder (DefaultSceneWgsl.Length + 1024)
+
+        let insert (hook: SceneShaderHook) =
+            for (target, code) in given do
+                if target = hook then
+                    if isNull code then
+                        nullArg (nameof hooks)
+
+                    text.Append (code) |> ignore
+
+                    if code.Length > 0 && not (code.EndsWith '\n') then
+                        text.Append ('\n') |> ignore
+
+        text.Append (SceneHead) |> ignore
+        insert SceneShaderHook.Varyings
+        text.Append (SceneAfterVaryings) |> ignore
+        insert SceneShaderHook.Declarations
+        text.Append (SceneVertexOpen) |> ignore
+        insert SceneShaderHook.VertexBegin
+        text.Append (SceneVertexBody) |> ignore
+        insert SceneShaderHook.VertexEnd
+        text.Append (SceneFragmentOpen) |> ignore
+        insert SceneShaderHook.FragmentBegin
+        text.Append (SceneFragmentShading) |> ignore
+        insert SceneShaderHook.FragmentLit
+        text.Append (SceneTail) |> ignore
+        text.ToString ()
+
+    let private commentPattern =
+        Regex (@"//[^\n]*|/\*[\s\S]*?\*/", RegexOptions.CultureInvariant)
+
+    let private functionPattern =
+        Regex (@"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)", RegexOptions.CultureInvariant)
+
+    /// <summary>
+    /// Decides, from the functions custom WGSL defines, which pipelines use it and which fall back to the stock
+    /// shader. Returns the reason when the set of entry points cannot make a working context.
+    /// </summary>
+    let internal planSceneEntryPoints (wgsl: string) : Result<SceneEntryPlan, string> =
+        let names = HashSet<string>(StringComparer.Ordinal)
+
+        for m in functionPattern.Matches (commentPattern.Replace (wgsl, " ")) do
+            names.Add m.Groups[1].Value |> ignore
+
+        let has (name: string) =
+            names.Contains name
+
+        let missingRequired =
+            [ "vs_main"; "fs_main" ]
+            |> List.filter (has >> not)
+
+        let halfPair (vertex: string) (fragment: string) (batches: string) =
+            if has vertex = has fragment then
+                None
+            else
+                let present, absent = if has vertex then vertex, fragment else fragment, vertex
+
+                Some
+                    $"Custom WGSL defines {present} but not {absent}. Define both to draw {batches} batches with your own shader, or neither to keep the built-in {batches} shader."
+
+        if not missingRequired.IsEmpty then
+            let missing = String.Join (" and ", missingRequired)
+            Error $"Custom WGSL must define the entry points vs_main and fs_main. Missing: {missing}."
+        else
+            match halfPair "vs_line" "fs_line" "line", halfPair "vs_disc" "fs_disc" "disc" with
+            | Some reason, _
+            | None, Some reason -> Error reason
+            | None, None when has "fs_disc_pick" && not (has "vs_disc") ->
+                Error
+                    "Custom WGSL defines fs_disc_pick but not vs_disc and fs_disc. Define all three, or leave fs_disc_pick out to keep the built-in disc picking shader."
+            | None, None ->
+                Ok
+                    {
+                        CustomPick = has "fs_pick"
+                        CustomLines = has "vs_line"
+                        CustomDiscs = has "vs_disc"
+                        CustomDiscPick = has "vs_disc" && has "fs_disc_pick"
+                    }
