@@ -162,9 +162,16 @@ let pickPixels: struct (int * int) array =
 [<Literal>]
 let CustomSize = 64
 
-/// <summary>The stock shader with one hook: every lit fragment takes its colour from user uniform slot 2.</summary>
+/// <summary>
+/// One hook: every lit fragment takes its colour from user uniform slot 2. The statement is the same text in
+/// WGSL and in GLSL.
+/// </summary>
+let customHooks: (SceneShaderHook * string) list =
+    [ (SceneShaderHook.FragmentLit, "lit = user.slots[2].rgb;") ]
+
+/// <summary>The stock shader with <c>customHooks</c>.</summary>
 let customWgsl () : string =
-    Shaders.composeScene [ (SceneShaderHook.FragmentLit, "lit = user.slots[2].rgb;") ]
+    Shaders.composeScene customHooks
 
 /// <summary>Three user uniform slots; the shader reads the last.</summary>
 let customUniforms: Vector4 array =

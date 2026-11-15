@@ -3,6 +3,10 @@
 /// pass through it, glass spheres riding the waves, hairlines, progress discs, a section plane that sweeps
 /// across, an orbiting camera, and GPU picking under the pointer.
 /// </summary>
+/// <remarks>
+/// The page draws with WebGPU where the browser has it and with WebGL2 where it does not. Add
+/// <c>?backend=webgl2</c> or <c>?backend=webgpu</c> to the address to choose.
+/// </remarks>
 module Ranvier.Wgpu.Samples.Waves
 
 open System
@@ -32,6 +36,16 @@ let private onPointerMove (canvas: obj) (handler: float -> float -> unit) : unit
 
 [<Emit("$0.addEventListener('pointerleave', () => $1())")>]
 let private onPointerLeave (canvas: obj) (handler: unit -> unit) : unit = jsNative
+
+/// <summary>The value of <c>backend</c> in the page's address, in lower case, or an empty string.</summary>
+[<Emit("(new URLSearchParams(location.search).get('backend') || '').toLowerCase()")>]
+let private backendParameter () : string = jsNative
+
+let private backendAsked () : WgpuBrowserBackend =
+    match backendParameter () with
+    | "webgl2" -> WgpuBrowserBackend.WebGL2
+    | "webgpu" -> WgpuBrowserBackend.WebGPU
+    | _ -> WgpuBrowserBackend.Auto
 
 [<Literal>]
 let private Side = 24
@@ -207,7 +221,9 @@ let start () : JS.Promise<unit> =
         let hud = byId "hud"
 
         try
-            let! ctx = WgpuContext.CreateAsync (canvas, pixelWidth canvas, pixelHeight canvas)
+            let! ctx =
+                WgpuContext.CreateAsync (canvas, pixelWidth canvas, pixelHeight canvas, backend = backendAsked ())
+
             let scene = Scene (ctx, canvas, hud)
 
             let rec loop (milliseconds: float) =
