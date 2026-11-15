@@ -31,6 +31,8 @@
     <Compile Include="Types.fs" />
     <Compile Include="Primitives.fs" />
     <Compile Include="Shaders.fs" />
+    <Compile Include="Batches.fs" />
+    <Compile Include="ScenePass.fs" />
     <Compile Include="WgpuContext.fs" />
   </ItemGroup>
 

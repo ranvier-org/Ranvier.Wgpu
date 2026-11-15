@@ -15,6 +15,13 @@
         "shipit"
       ],
       "rollForward": true
+    },
+    "fickl": {
+      "version": "0.10.1",
+      "commands": [
+        "fickl"
+      ],
+      "rollForward": true
     }
   }
 }

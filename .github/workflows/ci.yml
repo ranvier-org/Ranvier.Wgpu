@@ -94,6 +94,8 @@ jobs:
             src/Ranvier.Wgpu/Types.fs \
             src/Ranvier.Wgpu/Primitives.fs \
             src/Ranvier.Wgpu/Shaders.fs \
+            src/Ranvier.Wgpu/Batches.fs \
+            src/Ranvier.Wgpu/ScenePass.fs \
             src/Ranvier.Wgpu/WgpuContext.fs \
             src/Ranvier.Wgpu.Sdl/WgpuSdlSurface.fs \
             tests/Ranvier.Wgpu.Tests/Program.fs
