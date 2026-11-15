@@ -121,6 +121,9 @@ jobs:
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -159,6 +162,7 @@ jobs:
           dotnet pack src/Ranvier.Wgpu/Ranvier.Wgpu.fsproj -c Release -o artifacts/nupkg
           dotnet pack src/Ranvier.Wgpu.Sdl/Ranvier.Wgpu.Sdl.fsproj -c Release -o artifacts/nupkg
           dotnet pack src/Ranvier.Wgpu.Sdl/Ranvier.Wgpu.Sdl.fsproj -c Release -p:RanvierTrace=true -o artifacts/nupkg
+          dotnet pack src/Fable.Ranvier.Wgpu/Fable.Ranvier.Wgpu.fsproj -c Release -o artifacts/nupkg
       - name: Verify multi-RID native layout and consumer restore
         run: |
           python - <<'PY'
@@ -168,7 +172,7 @@ jobs:
           nupkgs = sorted(Path('artifacts/nupkg').glob('*.nupkg'))
           names = [p.name for p in nupkgs]
           print('Packed:', names)
-          assert len(nupkgs) == 3, f'Expected 3 packages, got {names}'
+          assert len(nupkgs) == 4, f'Expected 4 packages, got {names}'
 
           wgpu_pkg = next(p for p in nupkgs if p.name.startswith('Ranvier.Wgpu.0.') or p.name.startswith('Ranvier.Wgpu.1.'))
           expected_entries = {
@@ -214,6 +218,88 @@ jobs:
                    '--source', feed, '--source', 'https://api.nuget.org/v3/index.json'],
                   check=True,
               )
+          PY
+      - name: Verify the browser package compiles from a consumer with Fickl
+        run: |
+          python - <<'PY'
+          import os, subprocess, tempfile, zipfile
+          from pathlib import Path
+
+          # Fickl compiles a library package from the sources in its fable/ folder.
+          pkg = next(Path('artifacts/nupkg').glob('Fable.Ranvier.Wgpu.*.nupkg'))
+          version = pkg.name[len('Fable.Ranvier.Wgpu.'):-len('.nupkg')]
+          expected = {'fable/Fable.Ranvier.Wgpu.fsproj', 'lib/net10.0/Fable.Ranvier.Wgpu.dll', 'README.md', 'ranvier-icon.png'}
+          expected |= {f'fable/{name}.fs' for name in (
+              'Types', 'Primitives', 'Shaders', 'GlslShaders', 'WebGpu', 'WebGl2', 'Packing', 'Backend',
+              'WebGpuBackend', 'WebGl2Backend', 'Batches', 'ScenePass', 'WgpuContext')}
+          with zipfile.ZipFile(pkg) as zf:
+              entries = set(zf.namelist())
+              missing = expected - entries
+              assert not missing, f'Missing entries in {pkg.name}: {missing}'
+              project = zf.read('fable/Fable.Ranvier.Wgpu.fsproj').decode()
+          # Every Compile item of the packed project file must name a file packed beside it.
+          import re
+          for include, link in re.findall(r'<Compile Include="([^"]+)"\s*(?:/>|>\s*<Link>([^<]+)</Link>)', project):
+              name = (link or include).removeprefix('./')
+              assert f'fable/{name}' in entries, f'{include} is compiled by the package and not packed as fable/{name}'
+
+          repo = Path.cwd()
+          feed = str(Path('artifacts/nupkg').resolve())
+          with tempfile.TemporaryDirectory() as tmp:
+              td = Path(tmp)
+              (td / 'NuGet.config').write_text(
+                  '<?xml version="1.0" encoding="utf-8"?>\n<configuration>\n  <packageSources>\n    <clear />\n'
+                  f'    <add key="local" value="{feed}" />\n'
+                  '    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />\n'
+                  '  </packageSources>\n</configuration>\n',
+                  encoding='utf-8',
+              )
+              (td / 'Consumer.fsproj').write_text(
+                  '<Project Sdk="Microsoft.NET.Sdk">\n'
+                  '  <PropertyGroup>\n'
+                  '    <OutputType>Exe</OutputType>\n'
+                  '    <TargetFramework>net10.0</TargetFramework>\n'
+                  '  </PropertyGroup>\n'
+                  '  <ItemGroup>\n'
+                  '    <Compile Include="Program.fs" />\n'
+                  f'    <PackageReference Include="Fable.Ranvier.Wgpu" Version="{version}" />\n'
+                  '  </ItemGroup>\n'
+                  '</Project>\n',
+                  encoding='utf-8',
+              )
+              # The quick start of the package's README, then values that need no browser.
+              (td / 'Program.fs').write_text(
+                  'module Consumer\n'
+                  'open System.Numerics\n'
+                  'open Fickl.Core\n'
+                  'open Ranvier.Wgpu\n'
+                  'let draw (canvas: obj) =\n'
+                  '    jsAsync {\n'
+                  '        let! ctx = WgpuContext.CreateAsync (canvas)\n'
+                  '        let mesh = ctx.UploadMesh (Primitives.unitIcosphere 3)\n'
+                  '        let batch = ctx.CreateBatch mesh\n'
+                  '        batch.SetSingle (Instance3D.sphere Vector3.Zero 2.0f (RgbaColor.fromHex "#3b82f6") 0.28f 1u InstanceFlags.None)\n'
+                  '        let camera = Camera3D.orbit Vector3.Zero 0.6f 0.4f 5.0f 45.0f\n'
+                  '        let pass =\n'
+                  '            ScenePass.create camera\n'
+                  '            |> ScenePass.withClear (RgbaColor.fromHex "#090d16")\n'
+                  '            |> ScenePass.withBatches [| batch |]\n'
+                  '        ctx.Render pass |> ignore\n'
+                  '        let! hit = ctx.PickAsync (ctx.Width / 2, ctx.Height / 2, pass)\n'
+                  '        return hit\n'
+                  '    }\n'
+                  'let color = RgbaColor.fromHex "#0ea5e9"\n'
+                  'printfn "blue %.3f; glsl %b; backend %A" color.B (GlslShaders.DefaultSceneGlsl.Length > 0) WgpuBrowserBackend.Auto\n',
+                  encoding='utf-8',
+              )
+              (td / 'package.json').write_text('{ "type": "module" }\n', encoding='utf-8')
+              # A package folder of its own, so the package just packed is not taken from the cache.
+              env = dict(os.environ, NUGET_PACKAGES=str(td / 'packages'))
+              subprocess.run(['dotnet', 'fickl', str(td / 'Consumer.fsproj'), '--outDir', str(td / 'out')],
+                             check=True, cwd=repo, env=env)
+              ran = subprocess.run(['node', str(td / 'out' / 'Program.js')], check=True, capture_output=True, text=True)
+              print(ran.stdout)
+              assert ran.stdout.strip() == 'blue 0.914; glsl true; backend Auto', ran.stdout
           PY
       - uses: actions/upload-artifact@v7
         with:

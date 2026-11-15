@@ -6,12 +6,13 @@ open Fable.Core
 open Fickl.Core
 
 /// <summary>
-/// Browser WebGPU 3D context drawing into a canvas, with 4x MSAA, runtime WGSL shaders, premultiplied sRGB
-/// colour, hardware instancing, BIM section clipping, and 1x1 scissor GPU pixel picking.
+/// Browser 3D context drawing into a canvas, with 4x MSAA, runtime shaders, premultiplied sRGB colour,
+/// hardware instancing, BIM section clipping, and 1x1 scissor GPU pixel picking. It draws with WebGPU, or with
+/// WebGL2 where the browser has no WebGPU.
 /// </summary>
 /// <remarks>
 /// Create one with <c>WgpuContext.CreateAsync</c>: a browser hands out a device asynchronously. Picking and
-/// WGSL validation are asynchronous for the same reason. The other members match the .NET package.
+/// shader validation are asynchronous for the same reason. The other members match the .NET package.
 /// </remarks>
 [<Sealed>]
 type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWidth: int, initialHeight: int) =
@@ -46,6 +47,61 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
             match Shaders.planSceneEntryPoints wgsl with
             | Ok plan -> Some plan
             | Error reason -> raise (WgslException reason)
+
+    static let glslPlanOf (customGlsl: string option) : SceneEntryPlan option =
+        match customGlsl with
+        | None -> None
+        | Some glsl ->
+            if isNull glsl then
+                nullArg (nameof customGlsl)
+
+            match GlslShaders.planSceneEntryPoints glsl with
+            | Ok plan -> Some plan
+            | Error reason -> raise (GlslException reason)
+
+    // The one place that chooses a backend. A context that was given a custom shader in one language only
+    // does not fall back to the stock shader in the other: it fails and says which text is missing.
+    static let createBackendAsync
+        (preference: WgpuBrowserBackend)
+        (canvas: obj)
+        (width: int option)
+        (height: int option)
+        (customWgsl: string option)
+        (wgslPlan: SceneEntryPlan option)
+        (customGlsl: string option)
+        (glslPlan: SceneEntryPlan option)
+        : JS.Promise<ISceneBackend> =
+        jsAsync {
+            let webGl2 () =
+                if customWgsl.IsSome && customGlsl.IsNone then
+                    raise (
+                        GlslException
+                            "This context draws with WebGL2, which runs GLSL ES 3.00 and not WGSL. It was given custom WGSL and no custom GLSL. Pass customGlsl as well, such as the result of GlslShaders.composeScene for the same hooks."
+                    )
+
+                WebGl2Backend.create canvas width height customGlsl glslPlan
+
+            let checkWebGpu () =
+                if customGlsl.IsSome && customWgsl.IsNone then
+                    raise (
+                        WgslException
+                            "This context draws with WebGPU, which runs WGSL and not GLSL. It was given custom GLSL and no custom WGSL. Pass customWgsl as well, such as the result of Shaders.composeScene for the same hooks."
+                    )
+
+            match preference with
+            | WgpuBrowserBackend.WebGL2 -> return webGl2 ()
+            | WgpuBrowserBackend.WebGPU ->
+                checkWebGpu ()
+                return! WebGpuBackend.createAsync canvas width height customWgsl wgslPlan
+            | WgpuBrowserBackend.Auto ->
+                let! found = WebGpuBackend.tryAdapterAsync ()
+
+                match found with
+                | Some (gpu, adapter) ->
+                    checkWebGpu ()
+                    return! WebGpuBackend.createWithAdapterAsync gpu adapter canvas width height customWgsl wgslPlan
+                | None -> return webGl2 ()
+        }
 
     static let buildLegacyScenePass
         (camera: Camera3D)
@@ -89,20 +145,40 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
     /// <summary>
     /// Creates a context that draws into <c>canvas</c>, an <c>HTMLCanvasElement</c> or an <c>OffscreenCanvas</c>.
     /// </summary>
-    /// <param name="canvas">The canvas to draw into. Its <c>webgpu</c> context is configured by this call.</param>
+    /// <param name="canvas">
+    /// The canvas to draw into. This call takes its <c>webgpu</c> or its <c>webgl2</c> context, and a canvas
+    /// gives out one kind of context for its whole life.
+    /// </param>
     /// <param name="width">Target width in device pixels; the canvas is resized to it. Default: the canvas's width.</param>
     /// <param name="height">Target height in device pixels; the canvas is resized to it. Default: the canvas's height.</param>
-    /// <param name="customWgsl">WGSL to use in place of the stock scene shader, such as the result of <c>Shaders.composeScene</c>.</param>
+    /// <param name="customWgsl">
+    /// WGSL to use in place of the stock scene shader when the context draws with WebGPU, such as the result of
+    /// <c>Shaders.composeScene</c>.
+    /// </param>
+    /// <param name="customGlsl">
+    /// GLSL ES 3.00 to use in place of the stock scene shader when the context draws with WebGL2, such as the
+    /// result of <c>GlslShaders.composeScene</c>. Give both texts to draw the same on either API.
+    /// </param>
+    /// <param name="backend">The graphics API to draw with. Default: <c>WgpuBrowserBackend.Auto</c>.</param>
     /// <returns>
-    /// A promise of the context. It rejects with a <see cref="T:Ranvier.Wgpu.WgslException"/> carrying the browser's
-    /// message when the WGSL does not compile or does not fit the scene pipelines, and with an error when the page
-    /// has no WebGPU or no adapter.
+    /// A promise of the context. It rejects with a <see cref="T:Ranvier.Wgpu.WgslException"/> or a
+    /// <see cref="T:Ranvier.Wgpu.GlslException"/> carrying the browser's message when the shader of the API in
+    /// use does not compile or does not fit the scene pipelines, with the same exceptions when a custom shader
+    /// was given only in the other API's language, and with an error when the page has neither API or
+    /// <c>backend</c> names one it lacks.
     /// </returns>
-    static member CreateAsync(canvas: obj, ?width: int, ?height: int, ?customWgsl: string) : JS.Promise<WgpuContext> =
+    static member CreateAsync
+        (canvas: obj, ?width: int, ?height: int, ?customWgsl: string, ?customGlsl: string, ?backend: WgpuBrowserBackend)
+        : JS.Promise<WgpuContext> =
         jsAsync {
-            // Decided from the text before a device is requested, so a shader that cannot work costs nothing to reject.
-            let plan = planOf customWgsl
-            let! backend = WebGpuBackend.createAsync canvas width height customWgsl plan
+            // Decided from the text before a device is requested, so a shader that cannot work costs nothing to
+            // reject, and is rejected on every browser, whichever API that browser draws with.
+            let wgslPlan = planOf customWgsl
+            let glslPlan = glslPlanOf customGlsl
+
+            let! backend =
+                createBackendAsync (defaultArg backend WgpuBrowserBackend.Auto) canvas width height customWgsl wgslPlan customGlsl glslPlan
+
             let canvas: WebGpu.Canvas = unbox canvas
             return new WgpuContext (backend, Packing.create 65536, canvas.width, canvas.height)
         }
@@ -126,10 +202,29 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
             | Ok plan -> return! WebGpuBackend.validateAsync (Some wgsl) (Some plan)
         }
 
+    /// <summary>
+    /// Checks GLSL the way a context that draws with WebGL2 would use it, without a canvas of the page: it
+    /// compiles the text and links every scene program from it on a WebGL2 context of its own.
+    /// </summary>
+    /// <returns>
+    /// A promise of <c>Ok</c> when a context can be created with the GLSL; otherwise of <c>Error</c> with the
+    /// driver's compiler or linker log, or what does not fit the scene pipelines.
+    /// </returns>
+    /// <remarks>It rejects when the page has no WebGL2.</remarks>
+    static member ValidateGlslAsync(glsl: string) : JS.Promise<Result<unit, string>> =
+        jsAsync {
+            if isNull glsl then
+                nullArg (nameof glsl)
+
+            match GlslShaders.planSceneEntryPoints glsl with
+            | Error reason -> return Error reason
+            | Ok plan -> return WebGl2Backend.validate (Some glsl) (Some plan)
+        }
+
     /// <summary>The GPU adapter's name, or an empty string when the browser withholds it.</summary>
     member _.AdapterName = backend.AdapterName
 
-    /// <summary>The graphics API in use: <c>WebGPU</c>.</summary>
+    /// <summary>The graphics API in use: <c>WebGPU</c> or <c>WebGL2</c>.</summary>
     member _.BackendName = backend.BackendName
 
     /// <summary>Current target width in device pixels.</summary>
@@ -144,7 +239,7 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
     /// <summary>Total frames completed on this context.</summary>
     member _.FramesDelivered = framesDelivered
 
-    /// <summary>True after `Dispose` has destroyed the device.</summary>
+    /// <summary>True after `Dispose` has released the context's GPU resources.</summary>
     member _.IsDisposed = disposed
 
     /// <summary>Resizes the canvas and the 4x-MSAA and GPU-picking targets when dimensions change.</summary>
@@ -211,7 +306,10 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
         Packing.userUniform userUniforms slot value
         backend.WriteUserUniforms (userUniforms, slot, 1)
 
-    /// <summary>Draws a `ScenePass` into the canvas. The 4x-MSAA target resolves into the canvas texture.</summary>
+    /// <summary>
+    /// Draws a `ScenePass` into the canvas. On WebGPU the 4x-MSAA target resolves into the canvas texture; on
+    /// WebGL2 its resolved frame is copied into the canvas.
+    /// </summary>
     /// <returns>
     /// The frame's counters. <c>GpuRenderMs</c> is the time to encode and submit the pass, not the GPU's time to
     /// draw it, and <c>ReadbackMs</c> is zero: nothing is read back.
@@ -269,9 +367,10 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
     /// what <c>RgbaPixels</c> holds after <c>Render</c> in the .NET package.
     /// </summary>
     /// <remarks>
-    /// This is asynchronous readback: the frame is resolved a second time into a texture, copied to a buffer and
-    /// mapped, and the promise settles when the GPU has done so. It is meant for tests and screenshots. Drawing
-    /// to the canvas needs no readback.
+    /// On WebGPU this is asynchronous readback: the frame is resolved a second time into a texture, copied to
+    /// a buffer and mapped, and the promise settles when the GPU has done so. On WebGL2 the resolved frame is
+    /// read at once, which waits for the GPU. It is meant for tests and screenshots. Drawing to the canvas
+    /// needs no readback.
     /// </remarks>
     /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
     member _.ReadPixelsAsync() : JS.Promise<byte array> =
@@ -307,7 +406,10 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
             backend.WriteSceneUniforms sceneUniforms
             backend.PickAsync (px, py, scene.Batches, scene.DiscBatches)
 
-    /// <summary>Destroys the pipelines, buffers, textures and the device, and releases the canvas.</summary>
+    /// <summary>
+    /// Destroys the pipelines, buffers and targets, and on WebGPU the device. The canvas can then take another
+    /// context that draws with the same graphics API.
+    /// </summary>
     member _.Dispose() =
         if not disposed then
             disposed <- true
@@ -350,6 +452,10 @@ module WgpuContext =
     /// <summary>Checks `wgsl` without a canvas; `Error` carries the browser's message.</summary>
     let inline validateWgslAsync (wgsl: string) : JS.Promise<Result<unit, string>> =
         WgpuContext.ValidateWgslAsync wgsl
+
+    /// <summary>Checks `glsl` for WebGL2 without a canvas of the page; `Error` carries the driver's log.</summary>
+    let inline validateGlslAsync (glsl: string) : JS.Promise<Result<unit, string>> =
+        WgpuContext.ValidateGlslAsync glsl
 
     /// <summary>Draws `pass` on `context` into its canvas.</summary>
     let inline render (context: WgpuContext) (pass: ScenePass) : FrameMetrics =

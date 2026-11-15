@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- A live browser scene on Fable.Ranvier.Wgpu. Run it with `npm install` and `npm start` in this folder, then
-       open the address it prints in a browser with WebGPU. -->
+       open the address it prints in a browser. It draws with WebGPU, or with WebGL2 where the browser has no
+       WebGPU; add ?backend=webgl2 or ?backend=webgpu to the address to choose. -->
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <TargetFramework>net10.0</TargetFramework>

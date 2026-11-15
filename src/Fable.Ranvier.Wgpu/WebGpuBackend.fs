@@ -63,7 +63,10 @@ module internal WebGpuBackend =
             shaderLocation = location
         |}
 
-    let private meshLayouts: VertexBufferLayout array =
+    // The vertex layouts of the three kinds of batch. The WebGL2 backend builds its vertex arrays from the same
+    // tables, so both read a record at the same offsets.
+
+    let meshLayouts: VertexBufferLayout array =
         [|
             {|
                 arrayStride = Packing.VertexBytes
@@ -91,7 +94,7 @@ module internal WebGpuBackend =
             |}
         |]
 
-    let private lineLayouts: VertexBufferLayout array =
+    let lineLayouts: VertexBufferLayout array =
         [|
             {|
                 arrayStride = Packing.LineVertexBytes
@@ -104,7 +107,7 @@ module internal WebGpuBackend =
             |}
         |]
 
-    let private discLayouts: VertexBufferLayout array =
+    let discLayouts: VertexBufferLayout array =
         [|
             {|
                 arrayStride = Packing.DiscBytes
@@ -463,43 +466,6 @@ module internal WebGpuBackend =
 
         last
 
-    /// <summary>
-    /// Copies mapped rows of <c>stride</c> bytes into tight straight-alpha RGBA rows: the readback of the .NET
-    /// package's <c>Render</c>.
-    /// </summary>
-    let private copyPixels (source: JS.Uint8Array) (stride: int) (width: int) (height: int) (isBgra: bool) : byte array =
-        let pixels = JS.Constructors.Uint8Array.Create (width * height * 4)
-
-        for y = 0 to height - 1 do
-            let from = y * stride
-            let into = y * width * 4
-
-            for x = 0 to width - 1 do
-                let s = from + x * 4
-                let d = into + x * 4
-                let mutable r = int source[s]
-                let mutable g = int source[s + 1]
-                let mutable b = int source[s + 2]
-                let a = int source[s + 3]
-
-                if isBgra then
-                    let swap = r
-                    r <- b
-                    b <- swap
-
-                if a > 0 && a < 255 then
-                    let half = a >>> 1
-                    r <- min 255 ((r * 255 + half) / a)
-                    g <- min 255 ((g * 255 + half) / a)
-                    b <- min 255 ((b * 255 + half) / a)
-
-                pixels[d] <- byte r
-                pixels[d + 1] <- byte g
-                pixels[d + 2] <- byte b
-                pixels[d + 3] <- byte a
-
-        unbox pixels
-
     [<Sealed>]
     type private Backend
         (
@@ -823,7 +789,7 @@ module internal WebGpuBackend =
                         let mapped =
                             JS.Constructors.Uint8Array.Create (staging.getMappedRange (0, stride * rows))
 
-                        return copyPixels mapped stride columns rows (format = TextureFormat.Bgra8Unorm)
+                        return Readback.copyPixels mapped stride columns rows (format = TextureFormat.Bgra8Unorm)
                     finally
                         staging.destroy ()
                 }
@@ -843,11 +809,11 @@ module internal WebGpuBackend =
                 surface.unconfigure ()
                 device.destroy ()
 
-    /// <summary>
-    /// Requests a device, builds the pipelines and binds the canvas. With no size given, the canvas keeps the
-    /// size it has.
-    /// </summary>
-    let createAsync
+    /// <summary>Builds the pipelines on <c>device</c> and binds the canvas. A failure destroys the device.</summary>
+    let private createOnAsync
+        (gpu: Gpu)
+        (adapter: Adapter)
+        (device: Device)
         (canvas: obj)
         (width: int option)
         (height: int option)
@@ -856,7 +822,6 @@ module internal WebGpuBackend =
         : JS.Promise<ISceneBackend> =
         jsAsync {
             let canvas: Canvas = unbox canvas
-            let! gpu, adapter, device = requestDeviceAsync ()
 
             try
                 let format = gpu.getPreferredCanvasFormat ()
@@ -881,6 +846,53 @@ module internal WebGpuBackend =
             with failure ->
                 device.destroy ()
                 return raise failure
+        }
+
+    /// <summary>
+    /// Requests a device, builds the pipelines and binds the canvas. With no size given, the canvas keeps the
+    /// size it has.
+    /// </summary>
+    let createAsync
+        (canvas: obj)
+        (width: int option)
+        (height: int option)
+        (customWgsl: string option)
+        (plan: SceneEntryPlan option)
+        : JS.Promise<ISceneBackend> =
+        jsAsync {
+            let! gpu, adapter, device = requestDeviceAsync ()
+            return! createOnAsync gpu adapter device canvas width height customWgsl plan
+        }
+
+    /// <summary>
+    /// The page's WebGPU and an adapter, or <c>None</c> where the page has no WebGPU or the browser gives no
+    /// adapter. The canvas is not touched, so it can still take a context of another kind.
+    /// </summary>
+    let tryAdapterAsync () : JS.Promise<(Gpu * Adapter) option> =
+        jsAsync {
+            match gpu () with
+            | None -> return None
+            | Some gpu ->
+                let! adapter = requestAdapterAsync gpu
+
+                match adapter with
+                | Some adapter -> return Some (gpu, adapter)
+                | None -> return None
+        }
+
+    /// <summary>As <c>createAsync</c>, on an adapter from <c>tryAdapterAsync</c>.</summary>
+    let createWithAdapterAsync
+        (gpu: Gpu)
+        (adapter: Adapter)
+        (canvas: obj)
+        (width: int option)
+        (height: int option)
+        (customWgsl: string option)
+        (plan: SceneEntryPlan option)
+        : JS.Promise<ISceneBackend> =
+        jsAsync {
+            let! device = adapter.requestDevice ()
+            return! createOnAsync gpu adapter device canvas width height customWgsl plan
         }
 
     /// <summary>Compiles the WGSL and builds every scene pipeline from it on a device of its own, with no canvas.</summary>
