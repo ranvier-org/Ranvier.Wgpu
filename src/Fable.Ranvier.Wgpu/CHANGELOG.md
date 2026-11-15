@@ -1,5 +1,5 @@
 ---
-force_version: 0.1.0
+last_commit_released: 2f9b86b7544e87f8cb7adfd3410bfd4105655587
 include:
   - ../Ranvier.Wgpu/Types.fs
   - ../Ranvier.Wgpu/Primitives.fs
@@ -17,3 +17,12 @@ updaters:
 # Changelog
 
 This changelog is generated from conventional commits by [EasyBuild.ShipIt](https://github.com/easybuild-org/EasyBuild.ShipIt).
+
+## 0.1.0 - 2026-11-15
+
+### 🚀 Features
+
+* Initial Ranvier.Wgpu and Ranvier.Wgpu.Sdl engine and zero-copy WebCore bridge ([de74dbb](https://github.com/ranvier-org/Ranvier.Wgpu/commit/de74dbbc0d4bfd5faf079ecc632e193047aea9bb))
+* *(wgpu)* Draw lines and discs under custom WGSL, add user uniforms, shader hooks and WGSL validation (#4) ([a764896](https://github.com/ranvier-org/Ranvier.Wgpu/commit/a7648963dbd93bb009e9853cd296c7b9d2ccd2c4))
+* *(wgpu)* Add Fable.Ranvier.Wgpu, the scene API on browser WebGPU (#6) ([9f82215](https://github.com/ranvier-org/Ranvier.Wgpu/commit/9f82215067e7f1d4d7d7d214fabf7158d823f7a9))
+* *(wgpu)* Add a WebGL2 backend to Fable.Ranvier.Wgpu and pack it (#7) ([2f9b86b](https://github.com/ranvier-org/Ranvier.Wgpu/commit/2f9b86b7544e87f8cb7adfd3410bfd4105655587))
