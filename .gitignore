@@ -10,3 +10,12 @@ src/Ranvier.Wgpu/runtimes/
 *.suo
 *.binlog
 Local.Build.props
+
+# Fable.Ranvier.Wgpu: compiled JavaScript, npm packages, and results that depend on the machine's GPU
+node_modules/
+fable_modules/
+tests/Fable.Ranvier.Wgpu.Tests/generated/
+tests/Fable.Ranvier.Wgpu.Tests/golden/scene.json
+tests/Fable.Ranvier.Wgpu.Tests/golden/scene.rgba
+samples/FableRanvierWgpuWaves/generated/
+samples/FableRanvierWgpuWaves/dist/

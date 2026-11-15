@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Ranvier.Wgpu for the browser: the scene API on WebGPU, compiled to JavaScript with Fickl.
+       Types.fs, Primitives.fs, Shaders.fs and ScenePass.fs are the .NET package's own files, linked unchanged. -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Ranvier.Wgpu</RootNamespace>
+    <AssemblyName>Fable.Ranvier.Wgpu</AssemblyName>
+    <!-- Not packed yet. It compiles with Fickl 0.11.0 or later, the first release that carries System.Numerics
+         vectors and spans. -->
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <WarnOn>$(WarnOn);3390</WarnOn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Fable.Ranvier.Wgpu.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../Ranvier.Wgpu/Types.fs" Link="Types.fs" />
+    <Compile Include="../Ranvier.Wgpu/Primitives.fs" Link="Primitives.fs" />
+    <Compile Include="../Ranvier.Wgpu/Shaders.fs" Link="Shaders.fs" />
+    <Compile Include="WebGpu.fs" />
+    <Compile Include="Packing.fs" />
+    <Compile Include="Backend.fs" />
+    <Compile Include="WebGpuBackend.fs" />
+    <Compile Include="Batches.fs" />
+    <Compile Include="../Ranvier.Wgpu/ScenePass.fs" Link="ScenePass.fs" />
+    <Compile Include="WgpuContext.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Fickl.Core" Version="0.11.0" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fable.Ranvier.Wgpu compiled with Fickl and run under the Node test runner (packing bytes) and in a headless
+       browser (rendering, picking, custom WGSL). The Shared files are also compiled by Fable.Ranvier.Wgpu.Golden,
+       which writes the .NET package's results for the same cases into golden/. -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Fable.Ranvier.Wgpu.Tests</AssemblyName>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../Shared/PackingCases.fs" Link="Shared/PackingCases.fs" />
+    <Compile Include="../Shared/SceneCase.fs" Link="Shared/SceneCase.fs" />
+    <Compile Include="PackingChecks.fs" />
+    <Compile Include="BrowserChecks.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Fable.Ranvier.Wgpu\Fable.Ranvier.Wgpu.fsproj" />
+  </ItemGroup>
+
+</Project>

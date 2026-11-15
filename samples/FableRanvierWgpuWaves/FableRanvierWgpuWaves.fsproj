@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A live browser scene on Fable.Ranvier.Wgpu. Run it with `npm install` and `npm start` in this folder, then
+       open the address it prints in a browser with WebGPU. -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="App.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Fable.Ranvier.Wgpu\Fable.Ranvier.Wgpu.fsproj" />
+  </ItemGroup>
+
+</Project>

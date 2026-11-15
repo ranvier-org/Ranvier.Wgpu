@@ -1,0 +1,13 @@
+{
+  "name": "fable-ranvier-wgpu-waves",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "compile": "dotnet fickl FableRanvierWgpuWaves.fsproj --outDir generated --configuration Release",
+    "bundle": "rolldown generated/App.js --format iife --file dist/app.js",
+    "start": "npm run compile && npm run bundle && node serve.mjs"
+  },
+  "devDependencies": {
+    "rolldown": "1.2.14"
+  }
+}

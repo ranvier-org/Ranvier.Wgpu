@@ -66,6 +66,49 @@ jobs:
           SDL_VIDEODRIVER: x11
         run: xvfb-run -a dotnet run --project tests/Ranvier.Wgpu.Tests -c Release --no-build
 
+  # Fable.Ranvier.Wgpu: compiled to JavaScript with the pinned Fickl tool, then tested under Node and in the
+  # runner's own Chrome against a render by the native package on the same machine.
+  browser:
+    name: Browser package (win-x64)
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: tests/Fable.Ranvier.Wgpu.Tests
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.fsproj', 'Directory.Build.props', 'NuGet.config', '.config/dotnet-tools.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+      - name: Fetch pinned wgpu-native runtime (win-x64)
+        working-directory: .
+        run: python scripts/fetch_wgpu_native.py --rid win-x64
+      - name: Restore the Fickl tool
+        run: dotnet tool restore
+      - name: Install npm packages
+        run: npm ci
+      - name: Compile to JavaScript with Fickl
+        run: npm run compile
+      - name: Byte layouts and camera matrix against .NET (Node)
+        run: npm test
+      - name: Render the shared scene with the native package
+        run: npm run golden
+      - name: Draw and pick in headless Chrome
+        run: npm run test:browser
+
   packages:
     name: Packages
     needs: [test]
@@ -94,9 +137,17 @@ jobs:
             src/Ranvier.Wgpu/Types.fs \
             src/Ranvier.Wgpu/Primitives.fs \
             src/Ranvier.Wgpu/Shaders.fs \
+            src/Ranvier.Wgpu/Batches.fs \
+            src/Ranvier.Wgpu/ScenePass.fs \
             src/Ranvier.Wgpu/WgpuContext.fs \
             src/Ranvier.Wgpu.Sdl/WgpuSdlSurface.fs \
-            tests/Ranvier.Wgpu.Tests/Program.fs
+            tests/Ranvier.Wgpu.Tests/Program.fs \
+            src/Fable.Ranvier.Wgpu \
+            tests/Shared \
+            tests/Fable.Ranvier.Wgpu.Golden/Program.fs \
+            tests/Fable.Ranvier.Wgpu.Tests/PackingChecks.fs \
+            tests/Fable.Ranvier.Wgpu.Tests/BrowserChecks.fs \
+            samples/FableRanvierWgpuWaves/App.fs
       - name: Check bindings generator determinism
         run: |
           python tools/gen_bindings.py
