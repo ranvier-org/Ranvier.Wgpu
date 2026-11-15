@@ -357,6 +357,10 @@ module SectionPlane =
         }
 
 /// <summary>Hemisphere + key/rim directional lighting rig and section-plane contour highlight parameters.</summary>
+/// <remarks>
+/// <c>KeyLightDir</c> and <c>RimLightDir</c> are normalised when a pass is rendered, so only their direction
+/// reaches the shader. Application data for a custom shader goes through <c>WgpuContext.SetUserUniforms</c>.
+/// </remarks>
 [<Struct>]
 type LightingRig =
     {

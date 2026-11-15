@@ -29,3 +29,15 @@ use subscription =
         pass |> WgpuSdlSurface.render surface |> ignore
         { new IDisposable with member _.Dispose() = () })
 ```
+
+## Requirements
+
+`FSharp.Core` 10.1.401 or later, which ships with .NET SDK 10.0.401. With an older SDK, restore reports `NU1605`;
+add `<PackageReference Update="FSharp.Core" Version="10.1.401" />` to the consuming project.
+
+## Custom shaders
+
+`WgpuSdlSurface.CreateContext(window, customWgsl = wgsl)` passes custom WGSL to the context. Build it with
+`Shaders.composeScene`, feed it application data with `context.SetUserUniforms`, and check it in a test with
+`WgpuContext.ValidateWgsl`, which opens no window. The limits of the engine (no textures, line-list lines, discs
+not depth-sorted) are listed in the [`Ranvier.Wgpu` README](https://www.nuget.org/packages/Ranvier.Wgpu).

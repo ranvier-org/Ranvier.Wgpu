@@ -33,6 +33,10 @@ module private WgpuCallbacks =
     let mutable lastMapStatus = 0u
     let mutable lastMapDone = false
 
+    let mutable lastScopeDone = false
+    let mutable lastScopeType = 0u
+    let mutable lastScopeMessage = ""
+
     let logDelegate =
         WGPULogCallback (fun level msg _ ->
             if level <= WGPULogLevel_Warn then
@@ -58,7 +62,16 @@ module private WgpuCallbacks =
             lastMapStatus <- status
             lastMapDone <- true)
 
+    let scopeDelegate =
+        WGPUPopErrorScopeCallback (fun _ errType msg _ _ ->
+            lastScopeType <- errType
+            lastScopeMessage <- msg.AsString ()
+            lastScopeDone <- true)
+
     let logPtr = Marshal.GetFunctionPointerForDelegate<WGPULogCallback>(logDelegate)
+
+    let scopePtr =
+        Marshal.GetFunctionPointerForDelegate<WGPUPopErrorScopeCallback>(scopeDelegate)
 
     let errorPtr =
         Marshal.GetFunctionPointerForDelegate<WGPUUncapturedErrorCallback>(errorDelegate)
@@ -485,6 +498,25 @@ type WgpuContext
     let mutable curWidth = max 1 (defaultArg initialWidth 960)
     let mutable curHeight = max 1 (defaultArg initialHeight 708)
     let wgslCode = defaultArg customWgsl Shaders.DefaultSceneWgsl
+
+    // Decided from the text before any native handle exists, so a shader that cannot work costs nothing to reject.
+    let entryPlan =
+        match customWgsl with
+        | None ->
+            {
+                CustomPick = true
+                CustomLines = true
+                CustomDiscs = true
+                CustomDiscPick = true
+            }
+        | Some wgsl ->
+            if isNull wgsl then
+                nullArg (nameof customWgsl)
+
+            match Shaders.planSceneEntryPoints wgsl with
+            | Ok plan -> plan
+            | Error reason -> raise (WgslException reason)
+
     let requestedBackend = defaultArg backend WgpuBackendPreference.Auto
 
     let colorTargetFormat =
@@ -690,20 +722,92 @@ type WgpuContext
 
     let queue = wgpuDeviceGetQueue (device)
 
-    let shaderModule =
-        withUtf8View wgslCode (fun codeView ->
+    let releaseDevice () =
+        if queue <> 0n then
+            wgpuQueueRelease queue
+
+        if device <> 0n then
+            wgpuDeviceRelease device
+
+        if adapter <> 0n then
+            wgpuAdapterRelease adapter
+
+        if instance <> 0n then
+            wgpuInstanceRelease instance
+
+    // Ends the innermost validation error scope and returns the first error raised inside it.
+    let popValidationError () : string voption =
+        lock callbackLock (fun () ->
+            WgpuCallbacks.lastScopeDone <- false
+            WgpuCallbacks.lastScopeType <- WGPUErrorType_NoError
+            WgpuCallbacks.lastScopeMessage <- ""
+            let mutable cbInfo = WGPUPopErrorScopeCallbackInfo ()
+            cbInfo.Mode <- WGPUCallbackMode_AllowSpontaneous
+            cbInfo.Callback <- WgpuCallbacks.scopePtr
+            let _ = wgpuDevicePopErrorScope (device, cbInfo)
+
+            if not WgpuCallbacks.lastScopeDone then
+                wgpuInstanceProcessEvents (instance)
+
+            if
+                WgpuCallbacks.lastScopeDone
+                && WgpuCallbacks.lastScopeType
+                   <> WGPUErrorType_NoError
+            then
+                ValueSome WgpuCallbacks.lastScopeMessage
+            else
+                ValueNone)
+
+    let compileModule (code: string) : nativeint =
+        withUtf8View code (fun codeView ->
             let mutable wgsl = WGPUShaderSourceWGSL ()
             wgsl.Chain.SType <- WGPUSType_ShaderSourceWGSL
             wgsl.Code <- codeView
             let mutable smDesc = WGPUShaderModuleDescriptor ()
             smDesc.NextInChain <- addrOf &wgsl
             smDesc.Label <- WGPUStringView.Null
-            let sm = wgpuDeviceCreateShaderModule (device, addrOf &smDesc)
+            wgpuDeviceCreateShaderModule (device, addrOf &smDesc))
 
-            if sm = 0n then
-                failwith "wgpuDeviceCreateShaderModule failed compiling WGSL."
+    // A WGSL compile error is collected in an error scope and thrown. Left uncaptured it is only printed, and
+    // the first queue submit that uses a pipeline of the broken module then aborts the process.
+    let shaderModule =
+        wgpuDevicePushErrorScope (device, WGPUErrorFilter_Validation)
+        let compiled = compileModule wgslCode
 
-            sm)
+        match popValidationError () with
+        | ValueNone when compiled <> 0n -> compiled
+        | failure ->
+            if compiled <> 0n then
+                wgpuShaderModuleRelease compiled
+
+            releaseDevice ()
+
+            match failure with
+            | ValueSome message -> raise (WgslException $"WGSL failed to compile. {message}")
+            | ValueNone -> failwith "wgpuDeviceCreateShaderModule failed compiling WGSL."
+
+    // The stock shader supplies the entry points that custom WGSL leaves out, so line, disc and picking
+    // pipelines exist on every context.
+    let stockModule =
+        if
+            entryPlan.CustomPick
+            && entryPlan.CustomLines
+            && entryPlan.CustomDiscs
+            && entryPlan.CustomDiscPick
+        then
+            0n
+        else
+            compileModule Shaders.DefaultSceneWgsl
+
+    let pickModule = if entryPlan.CustomPick then shaderModule else stockModule
+    let lineModule = if entryPlan.CustomLines then shaderModule else stockModule
+    let discModule = if entryPlan.CustomDiscs then shaderModule else stockModule
+
+    let discPickModule =
+        if entryPlan.CustomDiscPick then
+            shaderModule
+        else
+            stockModule
 
     let uniformSize = uint64 ((sizeof<GpuSceneUniforms> + 15) &&& ~~~15)
 
@@ -722,20 +826,43 @@ type WgpuContext
 
         b
 
+    let userUniformSize = uint64 (Shaders.UserUniformSlots * sizeof<Vector4>)
+
+    let userUniformBuffer =
+        let mutable desc = WGPUBufferDescriptor ()
+
+        desc.Usage <-
+            WGPUBufferUsage_Uniform
+            ||| WGPUBufferUsage_CopyDst
+
+        desc.Size <- userUniformSize
+        let b = wgpuDeviceCreateBuffer (device, addrOf &desc)
+
+        if b = 0n then
+            failwith "wgpuDeviceCreateBuffer (userUniformBuffer) failed."
+
+        b
+
     let bindGroupLayout =
-        let mutable entry = WGPUBindGroupLayoutEntry ()
-        entry.Binding <- 0u
+        let uniformEntry (binding: uint32) (size: uint64) =
+            let mutable entry = WGPUBindGroupLayoutEntry ()
+            entry.Binding <- binding
 
-        entry.Visibility <-
-            WGPUShaderStage_Vertex
-            ||| WGPUShaderStage_Fragment
+            entry.Visibility <-
+                WGPUShaderStage_Vertex
+                ||| WGPUShaderStage_Fragment
 
-        entry.Buffer.Type <- WGPUBufferBindingType_Uniform
-        entry.Buffer.MinBindingSize <- uniformSize
+            entry.Buffer.Type <- WGPUBufferBindingType_Uniform
+            entry.Buffer.MinBindingSize <- size
+            entry
+
+        let entries = [| uniformEntry 0u uniformSize; uniformEntry 1u userUniformSize |]
+
+        use pEntries = fixed entries
         let mutable desc = WGPUBindGroupLayoutDescriptor ()
         desc.Label <- WGPUStringView.Null
-        desc.EntryCount <- 1un
-        desc.Entries <- addrOf &entry
+        desc.EntryCount <- unativeint entries.Length
+        desc.Entries <- NativePtr.toNativeInt pEntries
         let bgl = wgpuDeviceCreateBindGroupLayout (device, addrOf &desc)
 
         if bgl = 0n then
@@ -744,16 +871,26 @@ type WgpuContext
         bgl
 
     let bindGroup =
-        let mutable entry = WGPUBindGroupEntry ()
-        entry.Binding <- 0u
-        entry.Buffer <- uniformBuffer
-        entry.Offset <- 0uL
-        entry.Size <- uniformSize
+        let bufferEntry (binding: uint32) (buffer: nativeint) (size: uint64) =
+            let mutable entry = WGPUBindGroupEntry ()
+            entry.Binding <- binding
+            entry.Buffer <- buffer
+            entry.Offset <- 0uL
+            entry.Size <- size
+            entry
+
+        let entries =
+            [|
+                bufferEntry 0u uniformBuffer uniformSize
+                bufferEntry 1u userUniformBuffer userUniformSize
+            |]
+
+        use pEntries = fixed entries
         let mutable desc = WGPUBindGroupDescriptor ()
         desc.Label <- WGPUStringView.Null
         desc.Layout <- bindGroupLayout
-        desc.EntryCount <- 1un
-        desc.Entries <- addrOf &entry
+        desc.EntryCount <- unativeint entries.Length
+        desc.Entries <- NativePtr.toNativeInt pEntries
         let bg = wgpuDeviceCreateBindGroup (device, addrOf &desc)
 
         if bg = 0n then
@@ -774,7 +911,15 @@ type WgpuContext
 
         pl
 
-    let buildPipeline (fsEntry: string) (colorFormat: uint32) (sampleCount: uint32) (cullBack: bool) (alphaBlend: bool) (depthWrite: bool) =
+    let buildPipeline
+        (sceneModule: nativeint)
+        (fsEntry: string)
+        (colorFormat: uint32)
+        (sampleCount: uint32)
+        (cullBack: bool)
+        (alphaBlend: bool)
+        (depthWrite: bool)
+        =
         let vAttrs =
             [|
                 let mutable a0 = WGPUVertexAttribute () in
@@ -872,7 +1017,7 @@ type WgpuContext
                 target.WriteMask <- WGPUColorWriteMask_All
 
                 let mutable frag = WGPUFragmentState ()
-                frag.Module <- shaderModule
+                frag.Module <- sceneModule
                 frag.EntryPoint <- fsView
                 frag.TargetCount <- 1un
                 frag.Targets <- addrOf &target
@@ -896,7 +1041,7 @@ type WgpuContext
                 let mutable rp = WGPURenderPipelineDescriptor ()
                 rp.Label <- WGPUStringView.Null
                 rp.Layout <- pipelineLayout
-                rp.Vertex.Module <- shaderModule
+                rp.Vertex.Module <- sceneModule
                 rp.Vertex.EntryPoint <- vsView
                 rp.Vertex.BufferCount <- 2un
                 rp.Vertex.Buffers <- NativePtr.toNativeInt pLayouts
@@ -915,24 +1060,30 @@ type WgpuContext
 
                 p))
 
+    // Pipeline creation is validated in one error scope: a shader that compiles can still fail to fit a
+    // pipeline (an entry point without its stage attribute, a vertex input of the wrong type, a binding
+    // larger than the buffer behind it).
+    do wgpuDevicePushErrorScope (device, WGPUErrorFilter_Validation)
+
     let opaqueCullPipeline =
-        buildPipeline "fs_main" colorTargetFormat 4u true false true
+        buildPipeline shaderModule "fs_main" colorTargetFormat 4u true false true
 
     let opaqueDoublePipeline =
-        buildPipeline "fs_main" colorTargetFormat 4u false false true
+        buildPipeline shaderModule "fs_main" colorTargetFormat 4u false false true
 
-    let blendCullPipeline = buildPipeline "fs_main" colorTargetFormat 4u true true false
+    let blendCullPipeline =
+        buildPipeline shaderModule "fs_main" colorTargetFormat 4u true true false
 
     let blendDoublePipeline =
-        buildPipeline "fs_main" colorTargetFormat 4u false true false
+        buildPipeline shaderModule "fs_main" colorTargetFormat 4u false true false
 
     let pickCullPipeline =
-        buildPipeline "fs_pick" WGPUTextureFormat_RGBA32Uint 1u true false true
+        buildPipeline pickModule "fs_pick" WGPUTextureFormat_RGBA32Uint 1u true false true
 
     let pickDoublePipeline =
-        buildPipeline "fs_pick" WGPUTextureFormat_RGBA32Uint 1u false false true
+        buildPipeline pickModule "fs_pick" WGPUTextureFormat_RGBA32Uint 1u false false true
 
-    let buildLinePipeline () =
+    let buildLinePipeline (sceneModule: nativeint) =
         let lAttrs =
             [|
                 let mutable a0 = WGPUVertexAttribute () in
@@ -970,7 +1121,7 @@ type WgpuContext
                 target.WriteMask <- WGPUColorWriteMask_All
 
                 let mutable frag = WGPUFragmentState ()
-                frag.Module <- shaderModule
+                frag.Module <- sceneModule
                 frag.EntryPoint <- fsView
                 frag.TargetCount <- 1un
                 frag.Targets <- addrOf &target
@@ -988,7 +1139,7 @@ type WgpuContext
                 let mutable rp = WGPURenderPipelineDescriptor ()
                 rp.Label <- WGPUStringView.Null
                 rp.Layout <- pipelineLayout
-                rp.Vertex.Module <- shaderModule
+                rp.Vertex.Module <- sceneModule
                 rp.Vertex.EntryPoint <- vsView
                 rp.Vertex.BufferCount <- 1un
                 rp.Vertex.Buffers <- addrOf &vLayout
@@ -1007,7 +1158,14 @@ type WgpuContext
 
                 p))
 
-    let buildDiscPipeline (fsEntry: string) (colorFormat: uint32) (sampleCount: uint32) (alphaBlend: bool) (depthWrite: bool) =
+    let buildDiscPipeline
+        (sceneModule: nativeint)
+        (fsEntry: string)
+        (colorFormat: uint32)
+        (sampleCount: uint32)
+        (alphaBlend: bool)
+        (depthWrite: bool)
+        =
         let dAttrs =
             [|
                 let mutable d0 = WGPUVertexAttribute () in
@@ -1060,7 +1218,7 @@ type WgpuContext
                 target.WriteMask <- WGPUColorWriteMask_All
 
                 let mutable frag = WGPUFragmentState ()
-                frag.Module <- shaderModule
+                frag.Module <- sceneModule
                 frag.EntryPoint <- fsView
                 frag.TargetCount <- 1un
                 frag.Targets <- addrOf &target
@@ -1089,7 +1247,7 @@ type WgpuContext
                 let mutable rp = WGPURenderPipelineDescriptor ()
                 rp.Label <- WGPUStringView.Null
                 rp.Layout <- pipelineLayout
-                rp.Vertex.Module <- shaderModule
+                rp.Vertex.Module <- sceneModule
                 rp.Vertex.EntryPoint <- vsView
                 rp.Vertex.BufferCount <- 1un
                 rp.Vertex.Buffers <- addrOf &instLayout
@@ -1108,19 +1266,55 @@ type WgpuContext
 
                 p))
 
-    let linePipeline = if customWgsl.IsNone then buildLinePipeline () else 0n
+    let linePipeline = buildLinePipeline lineModule
 
     let discPipeline =
-        if customWgsl.IsNone then
-            buildDiscPipeline "fs_disc" colorTargetFormat 4u true false
-        else
-            0n
+        buildDiscPipeline discModule "fs_disc" colorTargetFormat 4u true false
 
     let discPickPipeline =
-        if customWgsl.IsNone then
-            buildDiscPipeline "fs_disc_pick" WGPUTextureFormat_RGBA32Uint 1u false true
-        else
-            0n
+        buildDiscPipeline discPickModule "fs_disc_pick" WGPUTextureFormat_RGBA32Uint 1u false true
+
+    let releasePipelineState () =
+        for pipeline in
+            [|
+                discPickPipeline
+                discPipeline
+                linePipeline
+                opaqueCullPipeline
+                opaqueDoublePipeline
+                blendCullPipeline
+                blendDoublePipeline
+                pickCullPipeline
+                pickDoublePipeline
+            |] do
+            if pipeline <> 0n then
+                wgpuRenderPipelineRelease pipeline
+
+        if pipelineLayout <> 0n then
+            wgpuPipelineLayoutRelease pipelineLayout
+
+        if bindGroup <> 0n then
+            wgpuBindGroupRelease bindGroup
+
+        if bindGroupLayout <> 0n then
+            wgpuBindGroupLayoutRelease bindGroupLayout
+
+        for buffer in [| uniformBuffer; userUniformBuffer |] do
+            if buffer <> 0n then
+                wgpuBufferDestroy buffer
+                wgpuBufferRelease buffer
+
+        for shader in [| shaderModule; stockModule |] do
+            if shader <> 0n then
+                wgpuShaderModuleRelease shader
+
+    do
+        match popValidationError () with
+        | ValueSome message ->
+            releasePipelineState ()
+            releaseDevice ()
+            raise (WgslException $"WGSL does not fit the scene pipelines. {message}")
+        | ValueNone -> ()
 
     // Fixed 256-byte staging buffer for 1x1 GPU pixel picking
     let pickReadbackBuffer =
@@ -1647,6 +1841,66 @@ type WgpuContext
     member _.CreateDiscBatch() : DiscBatch =
         new DiscBatch (device, queue)
 
+    /// <summary>
+    /// Writes application data into the user uniform block, starting at slot 0. A shader reads it as
+    /// <c>user.slots[i]</c> (<c>@group(0) @binding(1)</c>).
+    /// </summary>
+    /// <remarks>
+    /// The block holds <c>Shaders.UserUniformSlots</c> values. Slots keep what was last written and start at
+    /// zero. A write takes effect for every pass rendered after it.
+    /// </remarks>
+    /// <exception cref="T:System.ArgumentException">More values than the block has slots.</exception>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
+    member _.SetUserUniforms(values: ReadOnlySpan<Vector4>) =
+        if disposed then
+            raise (ObjectDisposedException (nameof WgpuContext))
+
+        if values.Length > Shaders.UserUniformSlots then
+            invalidArg (nameof values) $"The user uniform block holds {Shaders.UserUniformSlots} values, got {values.Length}."
+
+        if values.Length > 0 then
+            let byteLen = unativeint (values.Length * sizeof<Vector4>)
+            use p = fixed &MemoryMarshal.GetReference (values)
+            wgpuQueueWriteBuffer (queue, userUniformBuffer, 0uL, NativePtr.toNativeInt p, byteLen)
+
+    /// <summary>Writes an array of application data into the user uniform block, starting at slot 0.</summary>
+    /// <exception cref="T:System.ArgumentException">More values than the block has slots.</exception>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
+    member this.SetUserUniforms(values: Vector4 array) =
+        this.SetUserUniforms (ReadOnlySpan<Vector4>(values))
+
+    /// <summary>Writes one slot of the user uniform block and leaves the others as they are.</summary>
+    /// <exception cref="T:System.ArgumentOutOfRangeException">The slot is outside the block.</exception>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
+    member _.SetUserUniform(slot: int, value: Vector4) =
+        if disposed then
+            raise (ObjectDisposedException (nameof WgpuContext))
+
+        if slot < 0 || slot >= Shaders.UserUniformSlots then
+            raise (ArgumentOutOfRangeException (nameof slot, slot, $"The user uniform block has slots 0 to {Shaders.UserUniformSlots - 1}."))
+
+        let mutable v = value
+        wgpuQueueWriteBuffer (queue, userUniformBuffer, uint64 (slot * sizeof<Vector4>), addrOf &v, unativeint sizeof<Vector4>)
+
+    /// <summary>
+    /// Checks WGSL the way a context would use it, without opening a window: it compiles the text and builds
+    /// every scene pipeline from it on an offscreen device.
+    /// </summary>
+    /// <returns>
+    /// <c>Ok</c> when a context can be created with the WGSL; otherwise <c>Error</c> with the compiler's or the
+    /// pipeline validator's message.
+    /// </returns>
+    /// <remarks>
+    /// Meant for a test or a build step, so that a shader error fails there rather than when the app starts.
+    /// It needs a GPU adapter or a software one, as any context does, and throws if none is available.
+    /// </remarks>
+    static member ValidateWgsl(wgsl: string, ?backend: WgpuBackendPreference) : Result<unit, string> =
+        try
+            (new WgpuContext (initialWidth = 1, initialHeight = 1, customWgsl = wgsl, ?backend = backend)).Dispose()
+            Ok ()
+        with :? WgslException as failure ->
+            Error failure.Message
+
     /// <summary>Executes a zero-allocation `ScenePass` purely in GPU VRAM without staging or mapping a CPU readback buffer.</summary>
     member internal _.RenderGpuPass(pass: ScenePass, ?resolveViewOverride: nativeint) : FrameMetrics =
         if disposed then
@@ -1898,60 +2152,8 @@ type WgpuContext
                 wgpuBufferDestroy pickReadbackBuffer
                 wgpuBufferRelease pickReadbackBuffer
 
-            if discPickPipeline <> 0n then
-                wgpuRenderPipelineRelease discPickPipeline
-
-            if discPipeline <> 0n then
-                wgpuRenderPipelineRelease discPipeline
-
-            if linePipeline <> 0n then
-                wgpuRenderPipelineRelease linePipeline
-
-            if opaqueCullPipeline <> 0n then
-                wgpuRenderPipelineRelease opaqueCullPipeline
-
-            if opaqueDoublePipeline <> 0n then
-                wgpuRenderPipelineRelease opaqueDoublePipeline
-
-            if blendCullPipeline <> 0n then
-                wgpuRenderPipelineRelease blendCullPipeline
-
-            if blendDoublePipeline <> 0n then
-                wgpuRenderPipelineRelease blendDoublePipeline
-
-            if pickCullPipeline <> 0n then
-                wgpuRenderPipelineRelease pickCullPipeline
-
-            if pickDoublePipeline <> 0n then
-                wgpuRenderPipelineRelease pickDoublePipeline
-
-            if pipelineLayout <> 0n then
-                wgpuPipelineLayoutRelease pipelineLayout
-
-            if bindGroup <> 0n then
-                wgpuBindGroupRelease bindGroup
-
-            if bindGroupLayout <> 0n then
-                wgpuBindGroupLayoutRelease bindGroupLayout
-
-            if uniformBuffer <> 0n then
-                wgpuBufferDestroy uniformBuffer
-                wgpuBufferRelease uniformBuffer
-
-            if shaderModule <> 0n then
-                wgpuShaderModuleRelease shaderModule
-
-            if queue <> 0n then
-                wgpuQueueRelease queue
-
-            if device <> 0n then
-                wgpuDeviceRelease device
-
-            if adapter <> 0n then
-                wgpuAdapterRelease adapter
-
-            if instance <> 0n then
-                wgpuInstanceRelease instance
+            releasePipelineState ()
+            releaseDevice ()
 
     interface IDisposable with
         member this.Dispose() =
@@ -1982,6 +2184,14 @@ module WgpuContext =
     /// <summary>Creates a camera-facing SDF `DiscBatch` on `context`.</summary>
     let inline createDiscBatch (context: WgpuContext) : DiscBatch =
         context.CreateDiscBatch ()
+
+    /// <summary>Writes `values` into the user uniform block of `context`, starting at slot 0.</summary>
+    let inline setUserUniforms (values: Vector4 array) (context: WgpuContext) : unit =
+        context.SetUserUniforms values
+
+    /// <summary>Checks `wgsl` without opening a window; `Error` carries the compiler's message.</summary>
+    let inline validateWgsl (wgsl: string) : Result<unit, string> =
+        WgpuContext.ValidateWgsl wgsl
 
     /// <summary>Renders `pass` on `context` and updates `context.RgbaPixels`.</summary>
     let inline render (context: WgpuContext) (pass: ScenePass) : FrameMetrics =

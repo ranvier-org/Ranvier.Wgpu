@@ -87,6 +87,450 @@ let private rgbaAt (struct (width: int, _height: int, pixels: byte array)) (x: i
     let idx = (y * width + x) * 4
     struct (pixels[idx], pixels[idx + 1], pixels[idx + 2], pixels[idx + 3])
 
+/// Runs `action` with `Console.Error` redirected and returns what the WebGPU error and log callbacks printed.
+let private captureWgpuConsoleErrors (action: unit -> unit) : string =
+    let previous = Console.Error
+    use writer = new IO.StringWriter ()
+    Console.SetError writer
+
+    try
+        action ()
+    finally
+        Console.SetError previous
+
+    writer.ToString ()
+
+/// Fails when `printed` holds an uncaptured WebGPU error. Adapter warnings, which differ between machines, pass.
+let private expectNoWgpuError (printed: string) (because: string) =
+    if printed.Contains "[Ranvier.Wgpu Error" then
+        failtestf "%s. Printed:\n%s" because printed
+
+let private pixelAt (ctx: WgpuContext) (x: int) (y: int) =
+    rgbaAt (struct (ctx.Width, ctx.Height, ctx.RgbaPixels)) x y
+
+/// Camera on the +Z axis looking at the origin: world X runs right and world Y runs up on screen.
+let private frontCamera = Camera3D.orbit Vector3.Zero 0.0f 0.0f 4.0f 45.0f
+
+/// One opaque red hairline across the upper part of a 64x64 target, at row 16.
+let private redLineAcrossRow16 =
+    let red = RgbaColor (1.0f, 0.0f, 0.0f, 1.0f)
+
+    [|
+        LineVertex3D (Vector3 (-1.4f, 0.8f, 0.0f), red)
+        LineVertex3D (Vector3 (1.4f, 0.8f, 0.0f), red)
+    |]
+
+/// One opaque green disc of 9 px radius at the centre of the target.
+let private greenDiscAtCentre =
+    [|
+        DiscInstance3D.create Vector3.Zero 9.0f (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f)) 0.0f 0.0f 0.0f 0.0f 5u InstanceFlags.None
+    |]
+
+/// Brightest red channel in column 32 between rows 12 and 20, where the hairline of `redLineAcrossRow16` lands.
+let private brightestRedNearRow16 (ctx: WgpuContext) =
+    let mutable best = 0uy
+
+    for y = 12 to 20 do
+        let struct (r, g, _, _) = pixelAt ctx 32 y
+
+        if g < 60uy && r > best then
+            best <- r
+
+    best
+
+/// A complete scene shader written from nothing: it defines only the two mesh entry points and paints magenta.
+[<Literal>]
+let private MagentaMeshOnlyWgsl =
+    """
+struct SceneUniforms {
+    viewProj: mat4x4<f32>,
+    camPos: vec4<f32>,
+    clipPlane: vec4<f32>,
+    skyColor: vec4<f32>,
+    groundColor: vec4<f32>,
+    keyLight: vec4<f32>,
+    rimLight: vec4<f32>,
+    sectionStyle: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> u: SceneUniforms;
+
+@vertex
+fn vs_main(
+    @location(0) localPos: vec3<f32>,
+    @location(3) m0: vec4<f32>,
+    @location(4) m1: vec4<f32>,
+    @location(5) m2: vec4<f32>,
+    @location(6) m3: vec4<f32>,
+) -> @builtin(position) vec4<f32> {
+    return u.viewProj * mat4x4<f32>(m0, m1, m2, m3) * vec4<f32>(localPos, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+}
+"""
+
+[<Tests>]
+let wgpuContextTests =
+    testSequenced
+    <| testList
+        "Ranvier.Wgpu"
+        [
+            testCase "a context with custom WGSL that keeps the stock entry points draws a line batch and a disc batch"
+            <| fun () ->
+                let custom =
+                    Shaders.DefaultSceneWgsl
+                    + "\n// a consumer's copy of the stock shader\n"
+
+                use ctx =
+                    new WgpuContext (initialWidth = 64, initialHeight = 64, customWgsl = custom)
+
+                use lines = ctx.CreateLineBatch ()
+                use discs = ctx.CreateDiscBatch ()
+                lines.UpdateVertices redLineAcrossRow16
+                discs.UpdateDiscs greenDiscAtCentre
+
+                let metrics =
+                    ScenePass.create frontCamera
+                    |> ScenePass.withClear (RgbaColor (0.0f, 0.0f, 0.0f, 1.0f))
+                    |> ScenePass.withLines [| lines |]
+                    |> ScenePass.withDiscs [| discs |]
+                    |> WgpuContext.render ctx
+
+                Expect.equal metrics.DrawCalls 2 "one draw for the line batch and one for the disc batch"
+                Expect.isGreaterThan (brightestRedNearRow16 ctx) 90uy "the red hairline is in the frame"
+                let struct (dr, dg, _, _) = pixelAt ctx 32 32
+                Expect.isGreaterThan dg 200uy "the green disc covers the centre"
+                Expect.isLessThan dr 60uy "the centre is not red"
+
+                let hit =
+                    ScenePass.create frontCamera
+                    |> ScenePass.withDiscs [| discs |]
+                    |> WgpuContext.pick 32 32 ctx
+
+                Expect.equal (hit |> ValueOption.map _.PickId) (ValueSome 5u) "the disc is pickable under custom WGSL"
+
+            testCase "a context with custom WGSL that defines only vs_main and fs_main draws lines and discs with the built-in shaders"
+            <| fun () ->
+                let mutable metrics = Unchecked.defaultof<FrameMetrics>
+                let mutable line = 0uy
+                let mutable disc = struct (0uy, 0uy, 0uy, 0uy)
+                let mutable mesh = struct (0uy, 0uy, 0uy, 0uy)
+                let mutable hit = ValueNone
+
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        use ctx =
+                            new WgpuContext (initialWidth = 64, initialHeight = 64, customWgsl = MagentaMeshOnlyWgsl)
+
+                        use boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+                        use boxes = ctx.CreateBatch boxMesh
+                        use lines = ctx.CreateLineBatch ()
+                        use discs = ctx.CreateDiscBatch ()
+
+                        // A small box in the lower part of the frame, clear of the line and of the disc.
+                        boxes.SetSingle (
+                            Instance3D.trs (Vector3 (0.0f, -1.0f, 0.0f)) 0.0f (Vector3 (0.6f, 0.6f, 0.6f)) RgbaColor.white 0.5f 9u InstanceFlags.None
+                        )
+
+                        lines.UpdateVertices redLineAcrossRow16
+                        discs.UpdateDiscs greenDiscAtCentre
+
+                        let pass =
+                            ScenePass.create frontCamera
+                            |> ScenePass.withClear (RgbaColor (0.0f, 0.0f, 0.0f, 1.0f))
+                            |> ScenePass.withBatches [| boxes |]
+                            |> ScenePass.withLines [| lines |]
+                            |> ScenePass.withDiscs [| discs |]
+
+                        metrics <- pass |> WgpuContext.render ctx
+                        line <- brightestRedNearRow16 ctx
+                        disc <- pixelAt ctx 32 32
+                        mesh <- pixelAt ctx 32 51
+                        hit <- pass |> WgpuContext.pick 32 51 ctx)
+
+                expectNoWgpuError printed "nothing is reported for a shader that leaves the optional entry points out"
+                Expect.equal metrics.DrawCalls 3 "mesh, line and disc batches are all drawn"
+                let struct (mr, mg, mb, _) = mesh
+                Expect.isGreaterThan mr 200uy "the custom fs_main painted the box (red channel)"
+                Expect.isLessThan mg 60uy "the custom fs_main painted the box (green channel)"
+                Expect.isGreaterThan mb 200uy "the custom fs_main painted the box (blue channel)"
+                Expect.isGreaterThan line 90uy "the built-in line shader drew the hairline"
+                let struct (dr, dg, _, _) = disc
+                Expect.isGreaterThan dg 200uy "the built-in disc shader drew the disc"
+                Expect.isLessThan dr 60uy "the disc is green"
+                Expect.equal (hit |> ValueOption.map _.PickId) (ValueSome 9u) "picking falls back to the built-in pick shader"
+
+            testCase "a context whose custom WGSL lacks a required entry point fails with a message naming it"
+            <| fun () ->
+                let noFragment = MagentaMeshOnlyWgsl.Replace ("fn fs_main()", "fn fs_other()")
+
+                let message =
+                    try
+                        use ctx =
+                            new WgpuContext (initialWidth = 16, initialHeight = 16, customWgsl = noFragment)
+
+                        ""
+                    with ex ->
+                        ex.Message
+
+                Expect.stringContains message "fs_main" "the failure names the missing entry point"
+
+            testCase "a context given WGSL that uses the reserved word `patch` as an identifier fails with the compiler's message"
+            <| fun () ->
+                let invalid =
+                    Shaders.DefaultSceneWgsl
+                    + "\nfn broken() -> f32 {\n    let patch = 1.0;\n    return patch;\n}\n"
+
+                let message =
+                    try
+                        use ctx =
+                            new WgpuContext (initialWidth = 16, initialHeight = 16, customWgsl = invalid)
+
+                        ""
+                    with ex ->
+                        ex.Message
+
+                Expect.stringContains message "patch" "the failure quotes the offending identifier"
+
+            testCase "ValidateWgsl returns the WGSL compiler's error without opening a window"
+            <| fun () ->
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        let invalid =
+                            Shaders.DefaultSceneWgsl
+                            + "\nfn broken() -> f32 {\n    let patch = 1.0;\n    return patch;\n}\n"
+
+                        match WgpuContext.ValidateWgsl invalid with
+                        | Ok () -> failtest "WGSL using the reserved word `patch` as an identifier was accepted"
+                        | Error message ->
+                            Expect.stringContains message "patch" "the error quotes the offending identifier"
+                            Expect.stringContains message "reserved" "the error says why the identifier is rejected"
+
+                        Expect.equal (WgpuContext.ValidateWgsl Shaders.DefaultSceneWgsl) (Ok ()) "the stock shader is valid"
+                        Expect.equal (WgpuContext.validateWgsl MagentaMeshOnlyWgsl) (Ok ()) "a shader with only the mesh entry points is valid"
+
+                        let expectError (wgsl: string) (fragment: string) (because: string) =
+                            match WgpuContext.ValidateWgsl wgsl with
+                            | Ok () -> failtestf "accepted WGSL that should fail: %s" because
+                            | Error message -> Expect.stringContains message fragment because
+
+                        expectError (MagentaMeshOnlyWgsl.Replace ("fn vs_main(", "fn vs_other(")) "vs_main" "a missing required entry point is named"
+
+                        expectError
+                            (MagentaMeshOnlyWgsl
+                             + "\n@fragment\nfn fs_line() -> @location(0) vec4<f32> {\n    return vec4<f32>(1.0);\n}\n")
+                            "vs_line"
+                            "half of the line entry points names the other half"
+
+                        expectError
+                            (MagentaMeshOnlyWgsl
+                             + "\n@fragment\nfn fs_disc_pick() -> @location(0) vec4<u32> {\n    return vec4<u32>(1u);\n}\n")
+                            "vs_disc"
+                            "a disc picking shader without the disc shader is rejected"
+
+                        // Compiles, but its user block is larger than the 16 slots the context binds.
+                        expectError
+                            (MagentaMeshOnlyWgsl.Replace (
+                                "@fragment\nfn fs_main() -> @location(0) vec4<f32> {\n    return vec4<f32>(1.0, 0.0, 1.0, 1.0);",
+                                "struct TooBig {\n    slots: array<vec4<f32>, 17>,\n};\n\n@group(0) @binding(1)\nvar<uniform> big: TooBig;\n\n@fragment\nfn fs_main() -> @location(0) vec4<f32> {\n    return big.slots[16];"
+                            ))
+                            "does not fit the scene pipelines"
+                            "a shader that compiles but does not fit a pipeline is rejected")
+
+                expectNoWgpuError printed "validation reports through its result and not through the console"
+
+            testCase "user uniforms set on the context reach a custom shader"
+            <| fun () ->
+                // The block is declared here with a shape of the consumer's own; only its size is fixed.
+                let wgsl =
+                    MagentaMeshOnlyWgsl.Replace (
+                        "@fragment\nfn fs_main() -> @location(0) vec4<f32> {\n    return vec4<f32>(1.0, 0.0, 1.0, 1.0);",
+                        "struct AppData {\n    tint: vec4<f32>,\n    glow: vec4<f32>,\n};\n\n@group(0) @binding(1)\nvar<uniform> app: AppData;\n\n@fragment\nfn fs_main() -> @location(0) vec4<f32> {\n    return vec4<f32>(app.tint.rgb + app.glow.rgb, 1.0);"
+                    )
+
+                Expect.stringContains wgsl "app.tint" "the test shader reads the user block"
+                use ctx = new WgpuContext (initialWidth = 64, initialHeight = 64, customWgsl = wgsl)
+                use boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+                use boxes = ctx.CreateBatch boxMesh
+                boxes.SetSingle (Instance3D.identity RgbaColor.white 0.5f 1u InstanceFlags.None)
+
+                let pass =
+                    ScenePass.create frontCamera
+                    |> ScenePass.withClear (RgbaColor (1.0f, 1.0f, 1.0f, 1.0f))
+                    |> ScenePass.withBatches [| boxes |]
+
+                pass |> WgpuContext.render ctx |> ignore
+                Expect.equal (pixelAt ctx 32 32) (struct (0uy, 0uy, 0uy, 255uy)) "every slot is zero until it is written"
+
+                ctx.SetUserUniforms [| Vector4 (0.0f, 1.0f, 0.0f, 0.0f) |]
+                pass |> WgpuContext.render ctx |> ignore
+                Expect.equal (pixelAt ctx 32 32) (struct (0uy, 255uy, 0uy, 255uy)) "slot 0 reached the shader"
+
+                ctx.SetUserUniform (1, Vector4 (0.0f, 0.0f, 1.0f, 0.0f))
+                pass |> WgpuContext.render ctx |> ignore
+                Expect.equal (pixelAt ctx 32 32) (struct (0uy, 255uy, 255uy, 255uy)) "slot 1 was written and slot 0 was kept"
+
+                ctx
+                |> WgpuContext.setUserUniforms [| Vector4 (1.0f, 0.0f, 0.0f, 0.0f); Vector4.Zero |]
+
+                pass |> WgpuContext.render ctx |> ignore
+                Expect.equal (pixelAt ctx 32 32) (struct (255uy, 0uy, 0uy, 255uy)) "both slots were replaced"
+
+                Expect.throwsT<ArgumentException>
+                    (fun () -> ctx.SetUserUniforms (Array.zeroCreate<Vector4>(Shaders.UserUniformSlots + 1)))
+                    "more values than slots are rejected"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () -> ctx.SetUserUniform (Shaders.UserUniformSlots, Vector4.One))
+                    "a slot outside the block is rejected"
+
+            testCase "the stock shader's named extension points take a consumer's code without editing its text"
+            <| fun () ->
+                Expect.equal (Shaders.composeScene []) Shaders.DefaultSceneWgsl "with no hooks the composed shader is the stock shader"
+
+                Expect.throwsT<ArgumentNullException>
+                    (fun () ->
+                        Shaders.composeScene [ SceneShaderHook.Declarations, null ]
+                        |> ignore)
+                    "null hook code is rejected"
+
+                let twice =
+                    Shaders.composeScene
+                        [
+                            SceneShaderHook.Declarations, "const FIRST: f32 = 1.0;"
+                            SceneShaderHook.Declarations, "const SECOND: f32 = FIRST + 1.0;"
+                        ]
+
+                Expect.isLessThan (twice.IndexOf "const FIRST") (twice.IndexOf "const SECOND") "code for one hook keeps the order it was given in"
+
+                let wgsl =
+                    Shaders.composeScene
+                        [
+                            SceneShaderHook.Declarations, "fn tinted(base: vec3<f32>) -> vec3<f32> {\n    return base * user.slots[0].rgb;\n}"
+                            SceneShaderHook.Varyings, "    @location(5) localPos: vec3<f32>,"
+                            // Pick id 77 marks an instance the vertex stage moves out of the frame.
+                            SceneShaderHook.VertexBegin,
+                            "    if (in.pickFlags.x == 77u) {\n        var hidden: VsOut;\n        hidden.clipPos = vec4<f32>(2.0, 2.0, 2.0, 1.0);\n        return hidden;\n    }"
+                            SceneShaderHook.VertexEnd, "    out.localPos = in.localPos;"
+                            // Flag bit 8 marks an instance painted by the consumer's own function.
+                            SceneShaderHook.FragmentBegin,
+                            "    if ((flags & 256u) != 0u) {\n        return vec4<f32>(tinted(vec3<f32>(1.0)), 1.0);\n    }"
+                            SceneShaderHook.FragmentLit, "    lit = vec3<f32>(0.0, 0.0, abs(in.localPos.z) * 100.0);"
+                        ]
+
+                Expect.equal (WgpuContext.ValidateWgsl wgsl) (Ok ()) "the composed shader is valid"
+                use ctx = new WgpuContext (initialWidth = 64, initialHeight = 64, customWgsl = wgsl)
+                use boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+                use boxes = ctx.CreateBatch boxMesh
+                use lines = ctx.CreateLineBatch ()
+                let size = Vector3 (0.5f, 0.5f, 0.5f)
+
+                boxes.UpdateInstances
+                    [|
+                        Instance3D.trs (Vector3 (-0.9f, 0.0f, 0.0f)) 0.0f size RgbaColor.white 0.5f 11u (InstanceFlags.Unlit ||| 256u)
+                        Instance3D.trs Vector3.Zero 0.0f size RgbaColor.white 0.5f 12u InstanceFlags.Unlit
+                        Instance3D.trs (Vector3 (0.9f, 0.0f, 0.0f)) 0.0f size RgbaColor.white 0.5f 77u InstanceFlags.Unlit
+                    |]
+
+                lines.UpdateVertices redLineAcrossRow16
+                ctx.SetUserUniform (0, Vector4 (0.0f, 1.0f, 0.0f, 0.0f))
+
+                let pass =
+                    ScenePass.create frontCamera
+                    |> ScenePass.withClear (RgbaColor (0.0f, 0.0f, 0.0f, 1.0f))
+                    |> ScenePass.withBatches [| boxes |]
+                    |> ScenePass.withLines [| lines |]
+
+                pass |> WgpuContext.render ctx |> ignore
+
+                Expect.equal
+                    (pixelAt ctx 12 32)
+                    (struct (0uy, 255uy, 0uy, 255uy))
+                    "FragmentBegin returned the colour of a Declarations function fed by a user uniform"
+
+                let struct (cr, cg, cb, _) = pixelAt ctx 32 32
+                Expect.isLessThan cr 30uy "FragmentLit replaced the lit colour (red channel)"
+                Expect.isLessThan cg 30uy "FragmentLit replaced the lit colour (green channel)"
+                Expect.isGreaterThan cb 200uy "the Varyings member assigned in VertexEnd reached FragmentLit"
+                Expect.equal (pixelAt ctx 52 32) (struct (0uy, 0uy, 0uy, 255uy)) "VertexBegin moved the third box out of the frame"
+                Expect.isGreaterThan (brightestRedNearRow16 ctx) 90uy "line batches still draw beside the hooks"
+
+                Expect.equal
+                    (pass
+                     |> WgpuContext.pick 32 32 ctx
+                     |> ValueOption.map _.PickId)
+                    (ValueSome 12u)
+                    "picking works with the composed shader"
+
+                Expect.equal (pass |> WgpuContext.pick 52 32 ctx) ValueNone "the hidden box is not pickable either"
+
+            testCase "batches with nothing in them are accepted by render and pick without a WebGPU error"
+            <| fun () ->
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        use ctx = new WgpuContext (initialWidth = 32, initialHeight = 32)
+                        use boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+
+                        use emptyMesh =
+                            ctx.UploadMesh
+                                {
+                                    Vertices = Array.empty
+                                    Indices = Array.empty
+                                }
+
+                        use neverUpdated = ctx.CreateBatch boxMesh
+                        use updatedWithNothing = ctx.CreateBatch boxMesh
+                        use emptied = ctx.CreateBatch (boxMesh, BlendMode.AlphaBlend, true)
+                        use onEmptyMesh = ctx.CreateBatch emptyMesh
+                        use linesNeverUpdated = ctx.CreateLineBatch ()
+                        use linesEmptied = ctx.CreateLineBatch ()
+                        use linesOneVertex = ctx.CreateLineBatch ()
+                        use discsNeverUpdated = ctx.CreateDiscBatch ()
+                        use discsEmptied = ctx.CreateDiscBatch ()
+
+                        let box = Instance3D.identity RgbaColor.white 0.5f 1u InstanceFlags.None
+
+                        updatedWithNothing.UpdateInstances (Array.empty<Instance3D>)
+                        emptied.UpdateInstances [| box; box |]
+                        emptied.UpdateInstances (ReadOnlySpan<Instance3D>.Empty)
+                        onEmptyMesh.SetSingle box
+                        linesEmptied.UpdateVertices redLineAcrossRow16
+                        linesEmptied.UpdateVertices (Array.empty<LineVertex3D>)
+                        linesOneVertex.UpdateVertices [| redLineAcrossRow16[0] |]
+                        discsEmptied.UpdateDiscs greenDiscAtCentre
+                        discsEmptied.UpdateDiscs (Array.empty<DiscInstance3D>)
+
+                        let everyEmptyBatch =
+                            ScenePass.create frontCamera
+                            |> ScenePass.withBatches [| neverUpdated; updatedWithNothing; emptied; onEmptyMesh |]
+                            |> ScenePass.withLines [| linesNeverUpdated; linesEmptied; linesOneVertex |]
+                            |> ScenePass.withDiscs [| discsNeverUpdated; discsEmptied |]
+
+                        let noBatches =
+                            ScenePass.create frontCamera
+                            |> ScenePass.withBatches Array.empty
+                            |> ScenePass.withLines Array.empty
+                            |> ScenePass.withDiscs Array.empty
+
+                        for pass in [ everyEmptyBatch; noBatches; ScenePass.create frontCamera ] do
+                            let metrics = pass |> WgpuContext.render ctx
+                            Expect.equal metrics.DrawCalls 0 "nothing is drawn for empty batches"
+                            Expect.equal (pass |> WgpuContext.pick 16 16 ctx) ValueNone "nothing is picked from empty batches"
+
+                        // The legacy overloads build their pass from sequences.
+                        ctx.Render (frontCamera, Seq.empty, lineBatches = Seq.empty, discBatches = Seq.empty)
+                        |> ignore
+
+                        ctx.Render (frontCamera, [ neverUpdated ], lineBatches = [ linesEmptied ], discBatches = [ discsEmptied ])
+                        |> ignore)
+
+                expectNoWgpuError printed "no WebGPU error is printed for empty batches"
+        ]
+
 [<Tests>]
 let wgpuSdlTests =
     testSequenced
@@ -241,6 +685,57 @@ let wgpuSdlTests =
                             Expect.isTrue surface.IsZeroCopyGpu "IsZeroCopyGpu is true on DX12"
                             Expect.equal metrics.ReadbackMs 0.0 "zero CPU readback time on DX12 fast path")
 
+            testCase "a WgpuSdlSurface presents passes whose batches are empty without a WebGPU error"
+            <| fun () ->
+                let mutable presented = 0L
+
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        onHostThread (fun () ->
+                            use window =
+                                Window.Create ("WgpuSdlSurface Empty Batch Test", 160, 120, hidden = true)
+
+                            window.Host.SetDeviceScale 1.0f
+                            window.Host.Resize (160, 120)
+                            window.Host.Document.body.innerHTML <- """<div id="vp" style="width:160px;height:120px"></div>"""
+                            let vp = window.Host.Document.getElementById "vp"
+
+                            use wgpu =
+                                window
+                                |> WgpuSdlSurface.createContextSized 160 120
+
+                            use surface = vp |> WgpuSdlSurface.bind window wgpu
+                            use boxMesh = wgpu.UploadMesh (Primitives.unitBox ())
+                            use neverUpdated = wgpu.CreateBatch boxMesh
+                            use emptied = wgpu.CreateBatch (boxMesh, BlendMode.AlphaBlend, true)
+                            use lines = wgpu.CreateLineBatch ()
+                            use discs = wgpu.CreateDiscBatch ()
+
+                            emptied.SetSingle (Instance3D.identity RgbaColor.white 0.5f 1u InstanceFlags.None)
+                            emptied.UpdateInstances (Array.empty<Instance3D>)
+                            lines.UpdateVertices (Array.empty<LineVertex3D>)
+                            discs.UpdateDiscs (Array.empty<DiscInstance3D>)
+
+                            let emptyBatches =
+                                ScenePass.create frontCamera
+                                |> ScenePass.withBatches [| neverUpdated; emptied |]
+                                |> ScenePass.withLines [| lines |]
+                                |> ScenePass.withDiscs [| discs |]
+
+                            for pass in [ emptyBatches; ScenePass.create frontCamera ] do
+                                let metrics = pass |> WgpuSdlSurface.render surface
+                                Expect.equal metrics.DrawCalls 0 "nothing is drawn for empty batches"
+                                window.Present ()
+
+                            surface.Render (frontCamera, Seq.empty, lineBatches = [ lines ], discBatches = [ discs ])
+                            |> ignore
+
+                            window.Present ()
+                            presented <- surface.FramesPresented))
+
+                Expect.equal presented 3L "all three frames were presented"
+                expectNoWgpuError printed "no WebGPU error is printed for empty batches"
+
             testCase "WgpuSdlSurface.lend restores element state on unmount, retains 3D GPU texture across HTML-only updates, and resizes cleanly"
             <| fun () ->
                 onHostThread (fun () ->
@@ -360,7 +855,7 @@ let wgpuSdlTests =
 [<EntryPoint>]
 let main argv =
     let run () =
-        runTestsWithCLIArgs [ Sequenced ] argv wgpuSdlTests
+        runTestsWithCLIArgs [ Sequenced ] argv (testList "all" [ wgpuContextTests; wgpuSdlTests ])
 
     // WebKit and SDL3 on macOS require window/host work on the process's main thread.
     if OperatingSystem.IsMacOS () then
