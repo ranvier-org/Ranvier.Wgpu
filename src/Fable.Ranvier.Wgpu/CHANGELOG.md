@@ -1,5 +1,5 @@
 ---
-last_commit_released: 2f9b86b7544e87f8cb7adfd3410bfd4105655587
+last_commit_released: 2fc79723e7a8e4aa9a9cfea3c1547e0f006de99e
 include:
   - ../Ranvier.Wgpu/Types.fs
   - ../Ranvier.Wgpu/Primitives.fs
@@ -17,6 +17,14 @@ updaters:
 # Changelog
 
 This changelog is generated from conventional commits by [EasyBuild.ShipIt](https://github.com/easybuild-org/EasyBuild.ShipIt).
+
+## 0.1.1 - 2026-11-16
+
+### 🐞 Bug Fixes
+
+* *(fable)* Lower Fable.Ranvier.Wgpu's minimum FSharp.Core to 10.0.100 (#10) ([2fc7972](https://github.com/ranvier-org/Ranvier.Wgpu/commit/2fc79723e7a8e4aa9a9cfea3c1547e0f006de99e))
+
+<strong><small>[View changes on Github](https://github.com/ranvier-org/Ranvier.Wgpu/compare/2f9b86b7544e87f8cb7adfd3410bfd4105655587..2fc79723e7a8e4aa9a9cfea3c1547e0f006de99e)</small></strong>
 
 ## 0.1.0 - 2026-11-15
 

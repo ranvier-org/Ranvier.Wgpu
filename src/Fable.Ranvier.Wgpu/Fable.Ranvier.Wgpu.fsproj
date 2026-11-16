@@ -9,7 +9,7 @@
     <RootNamespace>Ranvier.Wgpu</RootNamespace>
     <AssemblyName>Fable.Ranvier.Wgpu</AssemblyName>
     <PackageId>Fable.Ranvier.Wgpu</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Title>Fable.Ranvier.Wgpu</Title>
     <Description>The Ranvier.Wgpu 3D scene API for the browser, compiled to JavaScript with Fickl: instanced meshes, lines, discs, section clipping, shader hooks and GPU picking on WebGPU, with a WebGL2 fallback.</Description>
     <PackageTags>ranvier;fsharp;fable;fickl;fable-library;fable-javascript;webgpu;webgl2;3d;graphics;wgsl</PackageTags>
