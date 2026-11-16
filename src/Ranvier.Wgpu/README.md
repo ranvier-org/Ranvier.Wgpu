@@ -37,13 +37,8 @@ let metrics = pass |> WgpuContext.render ctx
 ## Requirements
 
 - .NET 10 (`net10.0`).
-- `FSharp.Core` 10.1.401 or later, which ships with .NET SDK 10.0.401. An older SDK brings an older `FSharp.Core`,
-  and restore then reports `NU1605` (package downgrade from 10.1.401). Either update the SDK or pin the package
-  in the consuming project:
-
-  ```xml
-  <PackageReference Update="FSharp.Core" Version="10.1.401" />
-  ```
+- `FSharp.Core` 10.0.100 or later, which ships with the first .NET 10 SDK, so any .NET 10 SDK builds against
+  this package. Versions up to 0.2.0 required `FSharp.Core` 10.1.401 (.NET SDK 10.0.401).
 
 ## Current limits
 

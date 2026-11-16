@@ -37,8 +37,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Canonical FSharp.Core floor aligned with Ranvier.View.WebCore. -->
-    <PackageReference Update="FSharp.Core" Version="10.1.401" />
+    <!-- The FSharp.Core floor of Ranvier.View.WebCore 0.1.2: the version in the first .NET 10 SDK. -->
+    <PackageReference Update="FSharp.Core" Version="10.0.100" />
   </ItemGroup>
 
   <!-- Cross-RID native packaging for NuGet consumers (win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64, osx-x64) -->
