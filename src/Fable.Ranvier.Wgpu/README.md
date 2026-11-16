@@ -7,7 +7,7 @@ Cameras, instances, primitives, the stock shader and shader hooks are the same F
 ## Install
 
 ```sh
-dotnet add package Fable.Ranvier.Wgpu --version 0.1.0
+dotnet add package Fable.Ranvier.Wgpu --version 0.1.1
 ```
 
 ```sh
