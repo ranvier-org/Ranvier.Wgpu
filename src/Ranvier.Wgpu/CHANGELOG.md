@@ -1,5 +1,5 @@
 ---
-last_commit_released: 2f9b86b7544e87f8cb7adfd3410bfd4105655587
+last_commit_released: b6db66fe3bb8fc6da0991c3bd003e0579da691d8
 updaters:
   - regex:
       file: Ranvier.Wgpu.fsproj
@@ -12,6 +12,14 @@ updaters:
 # Changelog
 
 This changelog is generated from conventional commits by [EasyBuild.ShipIt](https://github.com/easybuild-org/EasyBuild.ShipIt).
+
+## 0.2.1 - 2026-11-16
+
+### 🐞 Bug Fixes
+
+* *(deps)* Require FSharp.Core 10.0.100 and build against Ranvier.View.WebCore.Sdl 0.2.0 (#8) ([b6db66f](https://github.com/ranvier-org/Ranvier.Wgpu/commit/b6db66fe3bb8fc6da0991c3bd003e0579da691d8))
+
+<strong><small>[View changes on Github](https://github.com/ranvier-org/Ranvier.Wgpu/compare/2f9b86b7544e87f8cb7adfd3410bfd4105655587..b6db66fe3bb8fc6da0991c3bd003e0579da691d8)</small></strong>
 
 ## 0.2.0 - 2026-11-15
 
