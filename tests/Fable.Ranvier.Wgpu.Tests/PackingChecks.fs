@@ -68,3 +68,59 @@ let sceneUniformValues () : JS.Uint8Array =
         JS.Constructors.Float32Array.Create (box (PackingCases.sceneUniformValues ()))
 
     JS.Constructors.Uint8Array.Create values.buffer
+
+/// <summary>Orthographic and <c>orbitPerspectiveness</c> camera matrices, 16 <c>float32</c> values each.</summary>
+let cameraMatrices () : JS.Uint8Array =
+    let values =
+        JS.Constructors.Float32Array.Create (box (PackingCases.cameraMatrices ()))
+
+    JS.Constructors.Uint8Array.Create values.buffer
+
+let private throwsOutOfRange (action: unit -> unit) : bool =
+    try
+        action ()
+        false
+    with :? ArgumentOutOfRangeException ->
+        true
+
+/// <summary>Checks <c>Camera3D.orthographic</c> and <c>Camera3D.orbitPerspectiveness</c> validation and clamping.</summary>
+let cameraValidation () =
+    let cam0 = Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 2.5f 0.0f
+
+    let camNeg =
+        Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 2.5f -0.5f
+
+    let cam1 = Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 2.5f 1.0f
+
+    let camOver =
+        Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 2.5f 1.8f
+
+    {|
+        orthoFov = float PackingCases.orthoAxisCamera.FovYDeg
+        clampedLow = camNeg = cam0
+        clampedHigh = camOver = cam1
+        zeroHalfHeight =
+            throwsOutOfRange (fun () ->
+                Camera3D.orthographic Numerics.Vector3.Zero 0.0f 0.0f 0.0f 6.0f
+                |> ignore)
+        zeroDistance =
+            throwsOutOfRange (fun () ->
+                Camera3D.orthographic Numerics.Vector3.Zero 0.0f 0.0f 2.0f 0.0f
+                |> ignore)
+        nanHalfHeight =
+            throwsOutOfRange (fun () ->
+                Camera3D.orthographic Numerics.Vector3.Zero 0.0f 0.0f Single.NaN 6.0f
+                |> ignore)
+        infDistance =
+            throwsOutOfRange (fun () ->
+                Camera3D.orthographic Numerics.Vector3.Zero 0.0f 0.0f 2.0f Single.PositiveInfinity
+                |> ignore)
+        zeroFitRadius =
+            throwsOutOfRange (fun () ->
+                Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 0.0f 0.5f
+                |> ignore)
+        nanPerspectiveness =
+            throwsOutOfRange (fun () ->
+                Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 2.0f Single.NaN
+                |> ignore)
+    |}

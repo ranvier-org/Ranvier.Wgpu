@@ -94,6 +94,8 @@ module internal WebGl2Backend =
             mutable VertexArray: VertexArray
             /// For an instance buffer, the mesh vertex buffer its vertex array was made with.
             mutable VertexArrayMesh: IBackendBuffer
+            /// For an instance buffer, the mesh index buffer its vertex array was made with.
+            mutable VertexArrayIndices: IBackendBuffer
             /// Index in the backend's list of live buffers, or -1 once deleted.
             mutable Slot: int
         }
@@ -378,10 +380,12 @@ module internal WebGl2Backend =
     /// <summary>Binds the vertex array that draws <c>mesh</c> with the instances in <c>instances</c>.</summary>
     let private bindMesh (gl: Context) (mesh: IMeshDraw) (instances: GlBuffer) =
         let vertices = mesh.VertexBuffer
+        let indices = mesh.IndexBuffer
 
         if
             isNull instances.VertexArray
             || not (obj.ReferenceEquals (instances.VertexArrayMesh, vertices))
+            || not (obj.ReferenceEquals (instances.VertexArrayIndices, indices))
         then
             if not (isNull instances.VertexArray) then
                 gl.deleteVertexArray instances.VertexArray
@@ -389,9 +393,10 @@ module internal WebGl2Backend =
             let vertexArray = gl.createVertexArray ()
             gl.bindVertexArray vertexArray
             describe gl WebGpuBackend.meshLayouts (unbox<GlBuffer> vertices).Buffer instances.Buffer
-            gl.bindBuffer (Gl.ElementArrayBuffer, (unbox<GlBuffer> mesh.IndexBuffer).Buffer)
+            gl.bindBuffer (Gl.ElementArrayBuffer, (unbox<GlBuffer> indices).Buffer)
             instances.VertexArray <- vertexArray
             instances.VertexArrayMesh <- vertices
+            instances.VertexArrayIndices <- indices
         else
             gl.bindVertexArray instances.VertexArray
 
@@ -541,6 +546,9 @@ module internal WebGl2Backend =
             gl.blitFramebuffer (0, 0, width, height, 0, height, width, 0, Gl.ColorBufferBit, Gl.Nearest)
 
         let createBuffer (target: int) (byteLength: int) (usage: int) : IBackendBuffer =
+            if target = Gl.ElementArrayBuffer then
+                gl.bindVertexArray null
+
             let buffer = gl.createBuffer ()
             gl.bindBuffer (target, buffer)
             gl.bufferData (target, byteLength, usage)
@@ -551,6 +559,7 @@ module internal WebGl2Backend =
                     Target = target
                     VertexArray = null
                     VertexArrayMesh = null
+                    VertexArrayIndices = null
                     Slot = live.Count
                 }
 
@@ -563,6 +572,23 @@ module internal WebGl2Backend =
             if not (isNull buffer.VertexArray) then
                 gl.deleteVertexArray buffer.VertexArray
                 buffer.VertexArray <- null
+
+            buffer.VertexArrayMesh <- null
+            buffer.VertexArrayIndices <- null
+
+        let writeBufferAt (buffer: IBackendBuffer) (dstByteOffset: int) (data: JS.ArrayBuffer) (byteLength: int) =
+            if byteLength > 0 then
+                let glBuf = unbox<GlBuffer> buffer
+
+                if not (obj.ReferenceEquals (data, stagingData)) then
+                    stagingData <- data
+                    stagingBytes <- JS.Constructors.Uint8Array.Create data
+
+                if glBuf.Target = Gl.ElementArrayBuffer then
+                    gl.bindVertexArray null
+
+                gl.bindBuffer (glBuf.Target, glBuf.Buffer)
+                gl.bufferSubData (glBuf.Target, dstByteOffset, stagingBytes, 0, byteLength)
 
         /// <summary>
         /// Sets the state that no pass changes, allocates the targets, and checks that the canvas takes a
@@ -605,31 +631,43 @@ module internal WebGl2Backend =
                 createBuffer Gl.ElementArrayBuffer byteLength Gl.StaticDraw
 
             member _.WriteBuffer(buffer, data, byteLength) =
-                let buffer = unbox<GlBuffer> buffer
+                writeBufferAt buffer 0 data byteLength
 
-                if not (obj.ReferenceEquals (data, stagingData)) then
-                    stagingData <- data
-                    stagingBytes <- JS.Constructors.Uint8Array.Create data
-
-                gl.bindBuffer (buffer.Target, buffer.Buffer)
-                gl.bufferSubData (buffer.Target, 0, stagingBytes, 0, byteLength)
+            member _.WriteBufferAt(buffer, dstByteOffset, data, byteLength) =
+                writeBufferAt buffer dstByteOffset data byteLength
 
             member _.WriteIndices(buffer, indices) =
-                let buffer = unbox<GlBuffer> buffer
-                gl.bindBuffer (buffer.Target, buffer.Buffer)
-                gl.bufferSubData (buffer.Target, 0, indices, 0, indices.Length)
+                if indices.Length > 0 then
+                    let glBuf = unbox<GlBuffer> buffer
+                    gl.bindVertexArray null
+                    gl.bindBuffer (glBuf.Target, glBuf.Buffer)
+                    gl.bufferSubData (glBuf.Target, 0, indices, 0, indices.Length)
 
             member _.DestroyBuffer(buffer) =
-                let buffer = unbox<GlBuffer> buffer
-                let slot = buffer.Slot
+                let glBuf = unbox<GlBuffer> buffer
+                let slot = glBuf.Slot
 
                 if slot >= 0 then
                     let last = live[live.Count - 1]
                     live[slot] <- last
                     last.Slot <- slot
                     live.RemoveAt (live.Count - 1)
-                    buffer.Slot <- -1
-                    delete buffer
+                    glBuf.Slot <- -1
+
+                    for i = 0 to live.Count - 1 do
+                        let entry = live[i]
+
+                        if
+                            not (isNull entry.VertexArray)
+                            && (obj.ReferenceEquals (entry.VertexArrayMesh, buffer)
+                                || obj.ReferenceEquals (entry.VertexArrayIndices, buffer))
+                        then
+                            gl.deleteVertexArray entry.VertexArray
+                            entry.VertexArray <- null
+                            entry.VertexArrayMesh <- null
+                            entry.VertexArrayIndices <- null
+
+                    delete glBuf
 
             member _.WriteSceneUniforms(data) =
                 gl.bindBuffer (Gl.UniformBuffer, sceneUniforms)

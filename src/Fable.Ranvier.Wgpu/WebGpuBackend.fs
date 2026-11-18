@@ -574,10 +574,16 @@ module internal WebGpuBackend =
                 )
 
             member _.WriteBuffer(buffer, data, byteLength) =
-                queue.writeBuffer (unbox buffer, 0, data, 0, byteLength)
+                if byteLength > 0 then
+                    queue.writeBuffer (unbox buffer, 0, data, 0, byteLength)
+
+            member _.WriteBufferAt(buffer, dstByteOffset, data, byteLength) =
+                if byteLength > 0 then
+                    queue.writeBuffer (unbox buffer, dstByteOffset, data, 0, byteLength)
 
             member _.WriteIndices(buffer, indices) =
-                queue.writeBuffer (unbox buffer, 0, indices, 0, indices.Length)
+                if indices.Length > 0 then
+                    queue.writeBuffer (unbox buffer, 0, indices, 0, indices.Length)
 
             member _.DestroyBuffer(buffer) =
                 (unbox<Buffer> buffer).destroy()

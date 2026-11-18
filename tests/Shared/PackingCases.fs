@@ -92,6 +92,58 @@ let lighting: LightingRig = LightingRig.studioDefault
 
 let section: SectionPlane = SectionPlane.create (Vector3 (1.0f, 0.5f, -0.25f)) 0.75f
 
+let orthoAxisCamera: Camera3D =
+    Camera3D.orthographic Vector3.Zero 0.0f 0.0f 2.0f 6.0f
+
+let orthoCamera: Camera3D =
+    Camera3D.orthographic (Vector3 (0.5f, -0.25f, 1.0f)) 30.0f 20.0f 2.5f 10.0f
+
+let perspectiveness0Camera: Camera3D =
+    Camera3D.orbitPerspectiveness (Vector3 (0.5f, -0.25f, 1.0f)) 35.0f 15.0f 2.5f 0.0f
+
+let perspectivenessMidCamera: Camera3D =
+    Camera3D.orbitPerspectiveness (Vector3 (0.5f, -0.25f, 1.0f)) 35.0f 15.0f 2.5f 0.5f
+
+let perspectiveness1Camera: Camera3D =
+    Camera3D.orbitPerspectiveness (Vector3 (0.5f, -0.25f, 1.0f)) 35.0f 15.0f 2.5f 1.0f
+
+let private matrixFloats (m: Matrix4x4) : float32 array =
+    [|
+        m.M11
+        m.M12
+        m.M13
+        m.M14
+        m.M21
+        m.M22
+        m.M23
+        m.M24
+        m.M31
+        m.M32
+        m.M33
+        m.M34
+        m.M41
+        m.M42
+        m.M43
+        m.M44
+    |]
+
+/// <summary>
+/// Projection and view-projection matrices for <c>Camera3D.orthographic</c> and
+/// <c>Camera3D.orbitPerspectiveness</c> cases, 16 <c>float32</c> values each.
+/// </summary>
+let cameraMatrices () : float32 array =
+    let aspect = float32 Width / float32 Height
+
+    Array.concat
+        [|
+            matrixFloats (Camera3D.projMatrix aspect orthoAxisCamera)
+            matrixFloats (Camera3D.viewProjMatrix Width Height orthoAxisCamera)
+            matrixFloats (Camera3D.viewProjMatrix Width Height orthoCamera)
+            matrixFloats (Camera3D.viewProjMatrix Width Height perspectiveness0Camera)
+            matrixFloats (Camera3D.viewProjMatrix Width Height perspectivenessMidCamera)
+            matrixFloats (Camera3D.viewProjMatrix Width Height perspectiveness1Camera)
+        |]
+
 /// <summary>
 /// The scene uniform block as <c>WgpuContext</c> writes it, built from the public API: the view-projection
 /// matrix, then camera position, clip plane, sky colour with the width, ground colour with the height, key

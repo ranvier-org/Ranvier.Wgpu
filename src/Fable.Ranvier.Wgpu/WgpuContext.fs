@@ -252,7 +252,7 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
             curHeight <- h
             backend.Resize (w, h)
 
-    /// <summary>Uploads CPU `MeshData` into immutable GPU vertex and index buffers.</summary>
+    /// <summary>Uploads CPU `MeshData` into dynamic GPU vertex and index buffers.</summary>
     member _.UploadMesh(mesh: MeshData) : MeshHandle =
         new MeshHandle (backend, staging, mesh)
 

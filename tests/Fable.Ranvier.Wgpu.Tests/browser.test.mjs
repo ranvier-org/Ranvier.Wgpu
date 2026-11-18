@@ -294,6 +294,102 @@ for (const backend of BACKENDS) {
     console.log(`pick after Dispose: ${result.settled}${result.message ? `: ${result.message}` : ""}`);
     assert.ok(result.settled === "rejected" || result.pickId === 7, JSON.stringify(result));
   });
+
+  test(`[${backend}] Camera3D.orthographic preserves pixel size across depth and supports DiscBatch, projectToScreen, screenRay, and PickAsync`, async () => {
+    const result = await run("orthographicScene", backend);
+    assert.equal(result.backend, backend);
+    assert.ok(result.nearWidth > 20, `near sphere renders across multiple pixels (${result.nearWidth})`);
+    assert.ok(Math.abs(result.nearWidth - result.farWidth) <= 1, `orthographic spheres differ in width: ${result.nearWidth} vs ${result.farWidth}`);
+    assert.ok(result.discPixel[1] > 200 && result.discPixel[0] < 60, `orthographic disc pixel should be green (${result.discPixel})`);
+    assert.equal(result.nearPick.pickId, 101);
+    assert.equal(result.farPick.pickId, 102);
+    assert.equal(result.discPick.pickId, 103);
+    assert.ok(Math.abs(result.nearPick.position[0] - (-0.8)) < 0.02, `near picked X ${result.nearPick.position[0]}`);
+    assert.ok(Math.abs(result.farPick.position[0] - 0.8) < 0.02, `far picked X ${result.farPick.position[0]}`);
+    assert.ok(close(result.screenNear[0], 48.0, 1e-3) && close(result.screenNear[1], 80.0, 1e-3));
+    assert.ok(close(result.screenFar[0], 112.0, 1e-3) && close(result.screenFar[1], 80.0, 1e-3));
+    assert.ok(close(result.rayOrigAX, -0.8, 1e-4) && close(result.rayOrigBX, 0.8, 1e-4));
+    for (const dir of [result.rayDirA, result.rayDirB]) {
+      assert.ok(close(dir[0], 0, 1e-4) && close(dir[1], 0, 1e-4) && close(dir[2], -1, 1e-4));
+    }
+  });
+
+  test(`[${backend}] MeshHandle.UpdateVertices, UpdateVertexRange, and UpdateMesh update rendered pixels and rebind grown buffers`, async () => {
+    const result = await run("dynamicMesh", backend);
+    assert.equal(result.backend, backend);
+    assert.deepEqual([...result.initialCounts], [4, 6, 2]);
+    assert.ok(result.px0[0] > 200 && result.px0[1] < 40 && result.px0[2] < 40, `initial quad red: ${result.px0}`);
+    assert.equal(result.pick0.pickId, 7);
+    assert.ok(close(result.pick0.position[2], 0.0, 1e-3), `initial Z ${result.pick0.position[2]}`);
+    assert.ok(result.px1[0] < 40 && result.px1[1] > 200 && result.px1[2] < 40, `updated quad green: ${result.px1}`);
+    assert.equal(result.pick1.pickId, 7);
+    assert.ok(close(result.pick1.position[2], 0.5, 1e-3), `updated Z ${result.pick1.position[2]}`);
+    assert.ok(result.topLeft[2] > 200 && result.topLeft[2] > result.topLeft[1], `top-left blue after UpdateVertexRange: ${result.topLeft}`);
+    assert.ok(result.botRight[1] > 200 && result.botRight[2] < 40, `bottom-right green after UpdateVertexRange: ${result.botRight}`);
+    assert.equal(result.negThrows, true);
+    assert.equal(result.oobThrows, true);
+    assert.deepEqual([...result.idxGrownCounts], [4, 12, 4]);
+    assert.equal(result.idxGrownTris, 4);
+    assert.ok(result.idxGrownPixel[0] > 200 && result.idxGrownPixel[1] < 40, `index-grown quad red: ${result.idxGrownPixel}`);
+    assert.equal(result.idxGrownPick.pickId, 7);
+    assert.deepEqual([...result.boxCounts], [24, 36, 12]);
+    assert.equal(result.boxTris, 12);
+    assert.ok(result.boxPixel[0] > 200 && result.boxPixel[1] > 200 && result.boxPixel[2] > 200, `grown box white: ${result.boxPixel}`);
+    assert.equal(result.boxPick.pickId, 7);
+    assert.equal(result.nullMeshThrows, true);
+    assert.equal(result.disposedVertsThrows, true);
+    assert.equal(result.disposedRangeThrows, true);
+    assert.equal(result.disposedMeshThrows, true);
+  });
+
+  test(`[${backend}] InstanceBatch, LineBatch, and DiscBatch Resize and UpdateRange mutate only target slots and validate ranges`, async () => {
+    const result = await run("dynamicBatches", backend);
+    assert.equal(result.backend, backend);
+
+    // InstanceBatch
+    assert.ok(result.inst.pxLeft0[0] > 200 && result.inst.pxLeft0[1] < 40, `slot 0 red: ${result.inst.pxLeft0}`);
+    assert.ok(result.inst.pxMid0[0] > 200 && result.inst.pxMid0[1] > 200 && result.inst.pxMid0[2] < 40, `slot 1 yellow: ${result.inst.pxMid0}`);
+    assert.ok(result.inst.pxRight0[2] > 200 && result.inst.pxRight0[0] < 40, `slot 2 blue: ${result.inst.pxRight0}`);
+    assert.deepEqual([...result.inst.picks0], [10, 99, 12]);
+    assert.equal(result.inst.count2, 2);
+    assert.deepEqual([...result.inst.pxRight2], [0, 0, 0, 255]);
+    assert.deepEqual([...result.inst.picks2], [10, 99, 0]);
+    assert.equal(result.inst.count5, 5);
+    assert.deepEqual([...result.inst.picks5], [10, 99, 0]);
+    assert.deepEqual([...result.inst.picks20], [10, 99, 199]);
+    assert.deepEqual([...result.inst.singlePicks], [77, 78]);
+    assert.equal(result.inst.negResize, true);
+    assert.equal(result.inst.negRange, true);
+    assert.equal(result.inst.oobRange, true);
+    assert.equal(result.inst.disposedThrows, true);
+
+    // LineBatch
+    assert.ok(result.line.topRed0 > 120, `line 0 red: ${result.line.topRed0}`);
+    assert.ok(result.line.midYellow0 > 120, `line 1 yellow: ${result.line.midYellow0}`);
+    assert.ok(result.line.botBlue0 > 120, `line 2 blue: ${result.line.botBlue0}`);
+    assert.deepEqual([...result.line.counts4], [4, 2]);
+    assert.equal(result.line.botBlue4, 0);
+    assert.equal(result.line.botBlue6, 0);
+    assert.ok(result.line.topRed70 > 120, `line 0 preserved on capacity growth: ${result.line.topRed70}`);
+    assert.ok(result.line.botCyan70 > 120, `line 34 cyan after capacity growth: ${result.line.botCyan70}`);
+    assert.equal(result.line.negResize, true);
+    assert.equal(result.line.oddResize, true);
+    assert.equal(result.line.oddStart, true);
+    assert.equal(result.line.oddLen, true);
+    assert.equal(result.line.negStart, true);
+    assert.equal(result.line.oobRange, true);
+    assert.equal(result.line.disposedThrows, true);
+
+    // DiscBatch
+    assert.deepEqual([...result.disc.picks0], [20, 88, 22]);
+    assert.equal(result.disc.count2, 2);
+    assert.equal(result.disc.right2, 0);
+    assert.equal(result.disc.right5, 0);
+    assert.deepEqual([...result.disc.picks40], [20, 299]);
+    assert.equal(result.disc.negResize, true);
+    assert.equal(result.disc.oobRange, true);
+    assert.equal(result.disc.disposedThrows, true);
+  });
 }
 
 test("the WebGL2 frame and picks of the fixed scene equal the WebGPU ones", async () => {
