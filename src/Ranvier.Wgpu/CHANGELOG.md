@@ -1,5 +1,5 @@
 ---
-last_commit_released: b6db66fe3bb8fc6da0991c3bd003e0579da691d8
+last_commit_released: d5af73cabb4023f0d369b9ace7c69680b1f77e59
 updaters:
   - regex:
       file: Ranvier.Wgpu.fsproj
@@ -12,6 +12,14 @@ updaters:
 # Changelog
 
 This changelog is generated from conventional commits by [EasyBuild.ShipIt](https://github.com/easybuild-org/EasyBuild.ShipIt).
+
+## 0.3.0 - 2026-11-18
+
+### 🚀 Features
+
+* *(wgpu)* Add orthographic projection, dynamic mesh updates, and sub-range batch writes (#13) ([d5af73c](https://github.com/ranvier-org/Ranvier.Wgpu/commit/d5af73cabb4023f0d369b9ace7c69680b1f77e59))
+
+<strong><small>[View changes on Github](https://github.com/ranvier-org/Ranvier.Wgpu/compare/b6db66fe3bb8fc6da0991c3bd003e0579da691d8..d5af73cabb4023f0d369b9ace7c69680b1f77e59)</small></strong>
 
 ## 0.2.1 - 2026-11-16
 
