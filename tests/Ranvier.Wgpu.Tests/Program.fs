@@ -138,6 +138,21 @@ let private brightestRedNearRow16 (ctx: WgpuContext) =
 
     best
 
+let private expectSmallScaleDepthAndCenter (label: string) (accuracy: Accuracy) (cam: Camera3D) =
+    let distance = Vector3.Distance (cam.Position, cam.Target)
+
+    Expect.isTrue
+        (0.0f < cam.NearPlane
+         && cam.NearPlane < distance
+         && distance < cam.FarPlane)
+        $"{label} preserves 0 < NearPlane ({cam.NearPlane}) < distance ({distance}) < FarPlane ({cam.FarPlane})"
+
+    match Camera3D.projectToScreen 200 200 cam Vector3.Zero with
+    | ValueNone -> failtestf "%s target should project to screen" label
+    | ValueSome p ->
+        Expect.floatClose accuracy (float p.X) 100.0 $"{label} target screen X"
+        Expect.floatClose accuracy (float p.Y) 100.0 $"{label} target screen Y"
+
 /// A complete scene shader written from nothing: it defines only the two mesh entry points and paints magenta.
 [<Literal>]
 let private MagentaMeshOnlyWgsl =
@@ -540,6 +555,11 @@ let wgpuContextTests =
                         Expect.floatClose Accuracy.medium (float cam.NearPlane) 0.01 "NearPlane clamps to at least 0.01"
                         Expect.floatClose Accuracy.medium (float cam.FarPlane) 22.0 "FarPlane equals distance + halfHeight * 8"
 
+                        expectSmallScaleDepthAndCenter
+                            "small-scale orthographic"
+                            Accuracy.medium
+                            (Camera3D.orthographic Vector3.Zero 0.0f 0.0f 0.0005f 0.005f)
+
                         Expect.throwsT<ArgumentOutOfRangeException>
                             (fun () ->
                                 Camera3D.orthographic Vector3.Zero 0.0f 0.0f 0.0f 6.0f
@@ -687,6 +707,16 @@ let wgpuContextTests =
                         Expect.isLessThanOrEqual p.X (float32 width) $"framed X <= width at {label}"
                         Expect.isGreaterThanOrEqual p.Y 0.0f $"framed Y >= 0 at {label}"
                         Expect.isLessThanOrEqual p.Y (float32 height) $"framed Y <= height at {label}"
+
+                expectSmallScaleDepthAndCenter
+                    "small-scale orbitPerspectiveness(1.0)"
+                    Accuracy.medium
+                    (Camera3D.orbitPerspectiveness Vector3.Zero 30.0f 20.0f 0.005f 1.0f)
+
+                expectSmallScaleDepthAndCenter
+                    "small-scale orbitPerspectiveness(0.0)"
+                    Accuracy.low
+                    (Camera3D.orbitPerspectiveness Vector3.Zero 30.0f 20.0f 0.002f 0.0f)
 
             testCase "MeshHandle.UpdateVertices, UpdateVertexRange, and UpdateMesh update rendered pixels in place"
             <| fun () ->

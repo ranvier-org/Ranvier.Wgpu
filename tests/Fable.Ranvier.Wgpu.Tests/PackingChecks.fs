@@ -124,3 +124,32 @@ let cameraValidation () =
                 Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 2.0f Single.NaN
                 |> ignore)
     |}
+
+let private smallScaleCheck (cam: Camera3D) =
+    let distance = Numerics.Vector3.Distance (cam.Position, cam.Target)
+
+    let depthValid =
+        0.0f < cam.NearPlane
+        && cam.NearPlane < distance
+        && distance < cam.FarPlane
+
+    let projected =
+        match Camera3D.projectToScreen 200 200 cam Numerics.Vector3.Zero with
+        | ValueSome p -> [| float p.X; float p.Y |]
+        | ValueNone -> [||]
+
+    {|
+        depthValid = depthValid
+        nearPlane = float cam.NearPlane
+        distance = float distance
+        farPlane = float cam.FarPlane
+        projected = projected
+    |}
+
+/// <summary>Checks small-scale <c>Camera3D.orthographic</c> and <c>Camera3D.orbitPerspectiveness</c> depth range and center projection.</summary>
+let smallScaleCamera () =
+    {|
+        ortho = smallScaleCheck (Camera3D.orthographic Numerics.Vector3.Zero 0.0f 0.0f 0.0005f 0.005f)
+        persp = smallScaleCheck (Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 30.0f 20.0f 0.005f 1.0f)
+        orthoZeroPersp = smallScaleCheck (Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 30.0f 20.0f 0.002f 0.0f)
+    |}

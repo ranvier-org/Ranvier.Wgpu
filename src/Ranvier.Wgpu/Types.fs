@@ -443,9 +443,10 @@ module Camera3D =
             raise (ArgumentOutOfRangeException (nameof distance, "Orthographic distance must be finite and greater than 0."))
 
         let cam = orbit target yawDeg pitchDeg distance (-abs halfHeight)
+        let nearFloor = max 1e-6f (min 0.01f (distance * 0.1f))
 
         { cam with
-            NearPlane = max 0.01f (distance - halfHeight * 8.0f)
+            NearPlane = max nearFloor (distance - halfHeight * 8.0f)
             FarPlane = distance + halfHeight * 8.0f
         }
 
@@ -472,9 +473,10 @@ module Camera3D =
                 / MathF.Sin (fovYDeg * MathF.PI / 360.0f)
 
             let cam = orbit target yawDeg pitchDeg distance fovYDeg
+            let nearFloor = max 1e-6f (min 0.05f (distance * 0.1f))
 
             { cam with
-                NearPlane = max 0.05f (distance - fitRadius * 2.5f)
+                NearPlane = max nearFloor (distance - fitRadius * 2.5f)
                 FarPlane = distance + fitRadius * 2.5f
             }
 
