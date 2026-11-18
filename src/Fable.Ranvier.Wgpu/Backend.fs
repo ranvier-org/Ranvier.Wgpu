@@ -83,6 +83,9 @@ type internal ISceneBackend =
     /// <summary>Copies the first <c>byteLength</c> bytes of <c>data</c> to the start of <c>buffer</c>.</summary>
     abstract WriteBuffer: buffer: IBackendBuffer * data: JS.ArrayBuffer * byteLength: int -> unit
 
+    /// <summary>Copies the first <c>byteLength</c> bytes of <c>data</c> into <c>buffer</c> starting at <c>dstByteOffset</c>.</summary>
+    abstract WriteBufferAt: buffer: IBackendBuffer * dstByteOffset: int * data: JS.ArrayBuffer * byteLength: int -> unit
+
     /// <summary>Copies all of <c>indices</c> to the start of <c>buffer</c>.</summary>
     abstract WriteIndices: buffer: IBackendBuffer * indices: uint32 array -> unit
 

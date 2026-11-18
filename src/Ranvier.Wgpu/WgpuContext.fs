@@ -1440,7 +1440,7 @@ type WgpuContext
         if w <> curWidth || h <> curHeight then
             allocateTargets w h
 
-    /// <summary>Uploads CPU `MeshData` into immutable GPU vertex and index buffers.</summary>
+    /// <summary>Uploads CPU `MeshData` into dynamic GPU vertex and index buffers.</summary>
     member _.UploadMesh(mesh: MeshData) : MeshHandle =
         new MeshHandle (device, queue, mesh)
 

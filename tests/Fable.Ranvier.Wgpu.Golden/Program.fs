@@ -64,7 +64,8 @@ let main argv =
     line $"  \"discs\": \"{structBytes PackingCases.discs}\","
     line $"  \"userUniforms\": \"{structBytes PackingCases.userUniforms}\","
     line $"  \"normalized\": \"{structBytes (PackingCases.normalized ())}\","
-    line $"  \"sceneUniforms\": \"{structBytes (PackingCases.sceneUniformValues ())}\""
+    line $"  \"sceneUniforms\": \"{structBytes (PackingCases.sceneUniformValues ())}\","
+    line $"  \"cameraMatrices\": \"{structBytes (PackingCases.cameraMatrices ())}\""
     line "}"
     File.WriteAllText (Path.Combine (folder, "packing.json"), json.ToString ())
     json.Clear () |> ignore

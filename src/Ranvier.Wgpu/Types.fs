@@ -392,7 +392,7 @@ module LightingRig =
             SectionContourWidth = 0.055f
         }
 
-/// <summary>Right-handed perspective 3D camera parameters.</summary>
+/// <summary>Right-handed perspective or orthographic (`FovYDeg &lt; 0`) 3D camera parameters.</summary>
 [<Struct>]
 type Camera3D =
     {
@@ -428,6 +428,58 @@ module Camera3D =
             FarPlane = 240.0f
         }
 
+    let private isFinite (v: float32) =
+        v - v = 0.0f
+
+    /// <summary>
+    /// Constructs an orthographic orbit camera around `target` from spherical angles in degrees,
+    /// encoding `-abs halfHeight` in `FovYDeg`.
+    /// </summary>
+    let orthographic (target: Vector3) (yawDeg: float32) (pitchDeg: float32) (halfHeight: float32) (distance: float32) : Camera3D =
+        if not (isFinite halfHeight) || halfHeight <= 0.0f then
+            raise (ArgumentOutOfRangeException (nameof halfHeight, "Orthographic halfHeight must be finite and greater than 0."))
+
+        if not (isFinite distance) || distance <= 0.0f then
+            raise (ArgumentOutOfRangeException (nameof distance, "Orthographic distance must be finite and greater than 0."))
+
+        let cam = orbit target yawDeg pitchDeg distance (-abs halfHeight)
+        let nearFloor = max 1e-6f (min 0.01f (distance * 0.1f))
+
+        { cam with
+            NearPlane = max nearFloor (distance - halfHeight * 8.0f)
+            FarPlane = distance + halfHeight * 8.0f
+        }
+
+    /// <summary>
+    /// Constructs an orbit camera smoothly transitioning between orthographic (`perspectiveness = 0`)
+    /// and perspective (`perspectiveness = 1`) via dolly-zoom while framing `fitRadius`.
+    /// </summary>
+    let orbitPerspectiveness (target: Vector3) (yawDeg: float32) (pitchDeg: float32) (fitRadius: float32) (perspectiveness: float32) : Camera3D =
+        if not (isFinite fitRadius) || fitRadius <= 0.0f then
+            raise (ArgumentOutOfRangeException (nameof fitRadius, "Camera fitRadius must be finite and greater than 0."))
+
+        if perspectiveness <> perspectiveness then
+            raise (ArgumentOutOfRangeException (nameof perspectiveness, "Camera perspectiveness cannot be NaN."))
+
+        let p = Math.Clamp (perspectiveness, 0.0f, 1.0f)
+
+        if p <= 1e-4f then
+            orthographic target yawDeg pitchDeg fitRadius (max 4.0f (fitRadius * 4.0f))
+        else
+            let fovYDeg = max 0.5f (p * 45.0f)
+
+            let distance =
+                fitRadius
+                / MathF.Sin (fovYDeg * MathF.PI / 360.0f)
+
+            let cam = orbit target yawDeg pitchDeg distance fovYDeg
+            let nearFloor = max 1e-6f (min 0.05f (distance * 0.1f))
+
+            { cam with
+                NearPlane = max nearFloor (distance - fitRadius * 2.5f)
+                FarPlane = distance + fitRadius * 2.5f
+            }
+
     /// <summary>Right-handed look-at view matrix using row-vector `System.Numerics` convention.</summary>
     let viewMatrix (cam: Camera3D) : Matrix4x4 =
         let zAxis = Vector3.Normalize (cam.Position - cam.Target)
@@ -460,15 +512,21 @@ module Camera3D =
             1.0f
         )
 
-    /// <summary>Right-handed perspective projection matrix with WebGPU `[0, 1]` NDC depth range.</summary>
+    /// <summary>Right-handed perspective or orthographic (`FovYDeg &lt; 0`) projection matrix with WebGPU `[0, 1]` NDC depth range.</summary>
     let projMatrix (aspect: float32) (cam: Camera3D) : Matrix4x4 =
-        let fovRad = cam.FovYDeg * MathF.PI / 180.0f
-        let f = 1.0f / MathF.Tan (fovRad * 0.5f)
         let safeAspect = max 0.05f aspect
         let zn = cam.NearPlane
         let zf = cam.FarPlane
         let rangeInv = 1.0f / (zn - zf)
-        Matrix4x4 (f / safeAspect, 0.0f, 0.0f, 0.0f, 0.0f, f, 0.0f, 0.0f, 0.0f, 0.0f, zf * rangeInv, -1.0f, 0.0f, 0.0f, zn * zf * rangeInv, 0.0f)
+
+        if cam.FovYDeg < 0.0f then
+            let halfH = -cam.FovYDeg
+            let halfW = halfH * safeAspect
+            Matrix4x4 (1.0f / halfW, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f / halfH, 0.0f, 0.0f, 0.0f, 0.0f, rangeInv, 0.0f, 0.0f, 0.0f, zn * rangeInv, 1.0f)
+        else
+            let fovRad = cam.FovYDeg * MathF.PI / 180.0f
+            let f = 1.0f / MathF.Tan (fovRad * 0.5f)
+            Matrix4x4 (f / safeAspect, 0.0f, 0.0f, 0.0f, 0.0f, f, 0.0f, 0.0f, 0.0f, 0.0f, zf * rangeInv, -1.0f, 0.0f, 0.0f, zn * zf * rangeInv, 0.0f)
 
     /// <summary>Combined `view * projection` matrix for a viewport of `width` by `height` pixels.</summary>
     let viewProjMatrix (width: int) (height: int) (cam: Camera3D) : Matrix4x4 =
