@@ -718,6 +718,48 @@ let wgpuContextTests =
                     Accuracy.low
                     (Camera3D.orbitPerspectiveness Vector3.Zero 30.0f 20.0f 0.002f 0.0f)
 
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () ->
+                        Camera3D.orbitPerspectiveness Vector3.Zero 0.0f 0.0f 0.0f 0.5f
+                        |> ignore)
+                    "zero fitRadius throws ArgumentOutOfRangeException"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () ->
+                        Camera3D.orbitPerspectiveness Vector3.Zero 0.0f 0.0f -1.0f 0.5f
+                        |> ignore)
+                    "negative fitRadius throws ArgumentOutOfRangeException"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () ->
+                        Camera3D.orbitPerspectiveness Vector3.Zero 0.0f 0.0f Single.NaN 0.5f
+                        |> ignore)
+                    "NaN fitRadius throws ArgumentOutOfRangeException"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () ->
+                        Camera3D.orbitPerspectiveness Vector3.Zero 0.0f 0.0f Single.PositiveInfinity 0.5f
+                        |> ignore)
+                    "Infinity fitRadius throws ArgumentOutOfRangeException"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () ->
+                        Camera3D.orbitPerspectiveness Vector3.Zero 0.0f 0.0f 2.0f Single.NaN
+                        |> ignore)
+                    "NaN perspectiveness throws ArgumentOutOfRangeException"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () ->
+                        Camera3D.orbitPerspectiveness Vector3.Zero 0.0f 0.0f 2.0f Single.PositiveInfinity
+                        |> ignore)
+                    "+Infinity perspectiveness throws ArgumentOutOfRangeException"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () ->
+                        Camera3D.orbitPerspectiveness Vector3.Zero 0.0f 0.0f 2.0f Single.NegativeInfinity
+                        |> ignore)
+                    "-Infinity perspectiveness throws ArgumentOutOfRangeException"
+
             testCase "MeshHandle.UpdateVertices, UpdateVertexRange, and UpdateMesh update rendered pixels in place"
             <| fun () ->
                 let printed =
@@ -814,6 +856,36 @@ let wgpuContextTests =
                         Expect.isGreaterThan bb 200uy "box center blue"
                         let boxPick = pass |> WgpuContext.pick 32 32 ctx
                         Expect.equal (boxPick |> ValueOption.map _.PickId) (ValueSome 7u) "grown mesh still picks cleanly"
+
+                        Expect.throwsT<ArgumentNullException>
+                            (fun () ->
+                                ctx.UploadMesh (Unchecked.defaultof<MeshData>)
+                                |> ignore)
+                            "UploadMesh with null MeshData throws ArgumentNullException"
+
+                        Expect.throwsT<ArgumentNullException>
+                            (fun () ->
+                                ctx.UploadMesh { Vertices = null; Indices = [||] }
+                                |> ignore)
+                            "UploadMesh with null Vertices throws ArgumentNullException"
+
+                        Expect.throwsT<ArgumentNullException>
+                            (fun () ->
+                                ctx.UploadMesh { Vertices = [||]; Indices = null }
+                                |> ignore)
+                            "UploadMesh with null Indices throws ArgumentNullException"
+
+                        Expect.throwsT<ArgumentNullException>
+                            (fun () -> mesh.UpdateMesh (Unchecked.defaultof<MeshData>))
+                            "UpdateMesh with null MeshData throws ArgumentNullException"
+
+                        Expect.throwsT<ArgumentNullException>
+                            (fun () -> mesh.UpdateMesh { Vertices = null; Indices = [||] })
+                            "UpdateMesh with null Vertices throws ArgumentNullException"
+
+                        Expect.throwsT<ArgumentNullException>
+                            (fun () -> mesh.UpdateMesh { Vertices = [||]; Indices = null })
+                            "UpdateMesh with null Indices throws ArgumentNullException"
 
                         mesh.Dispose ()
 
@@ -1092,6 +1164,8 @@ let wgpuContextTests =
 
                         discs.Resize 2
                         Expect.equal discs.Count 2 "DiscBatch.Resize(2) updates Count"
+                        discPass |> WgpuContext.render ctx |> ignore
+                        Expect.equal (pixelAt ctx 100 30) (struct (0uy, 0uy, 0uy, 255uy)) "disc 2 pixels cleared after Resize(2)"
                         Expect.equal (discPass |> WgpuContext.pick 100 30 ctx) ValueNone "disc 2 hidden after Resize(2)"
 
                         discs.Resize 40
@@ -1112,15 +1186,166 @@ let wgpuContextTests =
                             (ValueSome 299u)
                             "disc 39 picks after capacity growth"
 
+                        // Pixel-level shrink-then-grow on DiscBatch: 2 discs -> Resize 1 -> backdrop -> Resize 2 + UpdateRange(1, ...) -> visible
+                        discs.UpdateDiscs [| mkDisc -2.0f red 301u; mkDisc 2.0f blue 302u |]
+                        discPass |> WgpuContext.render ctx |> ignore
+                        let struct (d2r0, _, d2b0, _) = pixelAt ctx 100 30
+                        Expect.isLessThan d2r0 40uy "two-disc render: second disc low red"
+                        Expect.isGreaterThan d2b0 200uy "two-disc render: second disc blue"
+
+                        Expect.equal
+                            (discPass
+                             |> WgpuContext.pick 100 30 ctx
+                             |> ValueOption.map _.PickId)
+                            (ValueSome 302u)
+                            "two-disc render: second disc picks"
+
+                        discs.Resize 1
+                        Expect.equal discs.Count 1 "DiscBatch.Resize(1) updates Count"
+                        discPass |> WgpuContext.render ctx |> ignore
+
+                        Expect.equal
+                            (pixelAt ctx 100 30)
+                            (struct (0uy, 0uy, 0uy, 255uy))
+                            "DiscBatch.Resize(1) returns second disc pixels to backdrop"
+
+                        Expect.equal (discPass |> WgpuContext.pick 100 30 ctx) ValueNone "DiscBatch.Resize(1) hides second disc from pick"
+                        let struct (d1r, d1g, _, _) = pixelAt ctx 20 30
+                        Expect.isGreaterThan d1r 200uy "DiscBatch.Resize(1) keeps first disc visible"
+                        Expect.isLessThan d1g 40uy "DiscBatch.Resize(1) keeps first disc red"
+
+                        discs.Resize 2
+                        Expect.equal discs.Count 2 "DiscBatch.Resize(2) restores Count"
+                        discPass |> WgpuContext.render ctx |> ignore
+                        Expect.equal (pixelAt ctx 100 30) (struct (0uy, 0uy, 0uy, 255uy)) "DiscBatch.Resize(2) zeroes grown slot before UpdateRange"
+
+                        discs.UpdateRange (1, [| mkDisc 2.0f green 303u |])
+                        discPass |> WgpuContext.render ctx |> ignore
+                        let struct (d3r, d3g, d3b, _) = pixelAt ctx 100 30
+                        Expect.isLessThan d3r 40uy "re-populated second disc low red"
+                        Expect.isGreaterThan d3g 200uy "re-populated second disc pixels reappear green"
+                        Expect.isLessThan d3b 40uy "re-populated second disc low blue"
+
+                        Expect.equal
+                            (discPass
+                             |> WgpuContext.pick 100 30 ctx
+                             |> ValueOption.map _.PickId)
+                            (ValueSome 303u)
+                            "re-populated second disc picks"
+
                         discs.UpdateRange (discs.Count, ReadOnlySpan<DiscInstance3D>.Empty)
 
                         Expect.throwsT<ArgumentOutOfRangeException> (fun () -> discs.Resize -1) "DiscBatch.Resize(-1) throws"
 
                         Expect.throwsT<ArgumentOutOfRangeException>
                             (fun () -> discs.UpdateRange (discs.Count, [| mkDisc 0.0f yellow 88u |]))
-                            "DiscBatch out-of-bounds UpdateRange throws")
+                            "DiscBatch out-of-bounds UpdateRange throws"
+
+                        instances.Dispose ()
+                        lines.Dispose ()
+                        discs.Dispose ()
+
+                        Expect.throwsT<ObjectDisposedException>
+                            (fun () -> instances.Resize 1)
+                            "InstanceBatch.Resize on disposed batch throws ObjectDisposedException"
+
+                        Expect.throwsT<ObjectDisposedException>
+                            (fun () -> instances.UpdateRange (0, ReadOnlySpan<Instance3D>.Empty))
+                            "InstanceBatch.UpdateRange on disposed batch throws ObjectDisposedException"
+
+                        Expect.throwsT<ObjectDisposedException>
+                            (fun () -> lines.Resize 2)
+                            "LineBatch.Resize on disposed batch throws ObjectDisposedException"
+
+                        Expect.throwsT<ObjectDisposedException>
+                            (fun () -> lines.UpdateRange (0, ReadOnlySpan<LineVertex3D>.Empty))
+                            "LineBatch.UpdateRange on disposed batch throws ObjectDisposedException"
+
+                        Expect.throwsT<ObjectDisposedException>
+                            (fun () -> discs.Resize 1)
+                            "DiscBatch.Resize on disposed batch throws ObjectDisposedException"
+
+                        Expect.throwsT<ObjectDisposedException>
+                            (fun () -> discs.UpdateRange (0, ReadOnlySpan<DiscInstance3D>.Empty))
+                            "DiscBatch.UpdateRange on disposed batch throws ObjectDisposedException")
 
                 expectNoWgpuError printed "no WebGPU error during batch Resize/UpdateRange tests"
+
+            testCase "LineVertex3D ignoreSectionPlane exempts line segments from SectionPlane clipping"
+            <| fun () ->
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        let defaultV = LineVertex3D (Vector3.Zero, RgbaColor.white)
+                        let explicitFalse = LineVertex3D (Vector3.Zero, Vector4.One, false)
+                        let exemptRgba = LineVertex3D (Vector3.Zero, RgbaColor.white, true)
+                        let exemptVec4 = LineVertex3D (Vector3.Zero, Vector4.One, true)
+                        Expect.equal defaultV.Pad 0.0f "2-arg LineVertex3D keeps Pad = 0.0f"
+                        Expect.equal explicitFalse.Pad 0.0f "3-arg false LineVertex3D keeps Pad = 0.0f"
+                        Expect.equal exemptRgba.Pad 1.0f "3-arg RgbaColor true sets Pad = 1.0f"
+                        Expect.equal exemptVec4.Pad 1.0f "3-arg Vector4 true sets Pad = 1.0f"
+
+                        use ctx = new WgpuContext (initialWidth = 120, initialHeight = 60)
+                        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 6.0f
+                        use lines = ctx.CreateLineBatch ()
+
+                        let green = RgbaColor (0.0f, 1.0f, 0.0f, 1.0f)
+                        let red = RgbaColor (1.0f, 0.0f, 0.0f, 1.0f)
+                        let blue = RgbaColor (0.0f, 0.0f, 1.0f, 1.0f)
+                        let cyan = Vector4 (0.0f, 1.0f, 1.0f, 1.0f)
+
+                        lines.UpdateVertices
+                            [|
+                                // y = +0.75 (unclipped half-space, row ~15)
+                                LineVertex3D (Vector3 (-2.5f, 0.75f, 0.0f), green, false)
+                                LineVertex3D (Vector3 (2.5f, 0.75f, 0.0f), green, false)
+                                // y = -0.30 (clipped half-space, row ~36, not exempt -> discarded)
+                                LineVertex3D (Vector3 (-2.5f, -0.30f, 0.0f), red, false)
+                                LineVertex3D (Vector3 (2.5f, -0.30f, 0.0f), red, false)
+                                // y = -0.75 (clipped half-space, row ~45, exempt via RgbaColor overload -> rendered)
+                                LineVertex3D (Vector3 (-2.5f, -0.75f, 0.0f), blue, true)
+                                LineVertex3D (Vector3 (2.5f, -0.75f, 0.0f), blue, true)
+                                // y = -1.20 (clipped half-space, row ~54, exempt via Vector4 overload -> rendered)
+                                LineVertex3D (Vector3 (-2.5f, -1.20f, 0.0f), cyan, true)
+                                LineVertex3D (Vector3 (2.5f, -1.20f, 0.0f), cyan, true)
+                            |]
+
+                        let pass =
+                            ScenePass.create cam
+                            |> ScenePass.withClear (RgbaColor (0.0f, 0.0f, 0.0f, 1.0f))
+                            |> ScenePass.withSection (SectionPlane.create Vector3.UnitY 0.0f)
+                            |> ScenePass.withLines [| lines |]
+
+                        pass |> WgpuContext.render ctx |> ignore
+
+                        let brightestInRows yMin yMax selector =
+                            let mutable best = 0uy
+
+                            for y = yMin to yMax do
+                                let v = selector (pixelAt ctx 60 y)
+
+                                if v > best then
+                                    best <- v
+
+                            best
+
+                        Expect.isGreaterThan (brightestInRows 12 18 (fun struct (_, g, _, _) -> g)) 120uy "unclipped line renders green"
+
+                        Expect.equal
+                            (brightestInRows 33 39 (fun struct (r, _, _, _) -> r))
+                            0uy
+                            "clipped line with ignoreSectionPlane=false is discarded"
+
+                        Expect.isGreaterThan
+                            (brightestInRows 42 48 (fun struct (_, _, b, _) -> b))
+                            120uy
+                            "clipped line with ignoreSectionPlane=true (RgbaColor) renders blue"
+
+                        Expect.isGreaterThan
+                            (brightestInRows 51 57 (fun struct (_, g, b, _) -> min g b))
+                            120uy
+                            "clipped line with ignoreSectionPlane=true (Vector4) renders cyan")
+
+                expectNoWgpuError printed "no WebGPU error during LineVertex3D section-exemption test"
         ]
 
 [<Tests>]

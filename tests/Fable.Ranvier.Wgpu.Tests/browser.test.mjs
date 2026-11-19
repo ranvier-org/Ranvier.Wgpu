@@ -328,6 +328,10 @@ for (const backend of BACKENDS) {
     assert.ok(result.botRight[1] > 200 && result.botRight[2] < 40, `bottom-right green after UpdateVertexRange: ${result.botRight}`);
     assert.equal(result.negThrows, true);
     assert.equal(result.oobThrows, true);
+    assert.deepEqual([...result.vertGrownCounts], [8, 6, 2]);
+    assert.ok(result.vertGrownPixel[0] > 200 && result.vertGrownPixel[1] > 200 && result.vertGrownPixel[2] < 40, `vertex-only grown quad yellow: ${result.vertGrownPixel}`);
+    assert.equal(result.vertGrownPick.pickId, 7);
+    assert.ok(close(result.vertGrownPick.position[2], 0.75, 1e-3), `vertex-only grown Z ${result.vertGrownPick.position[2]}`);
     assert.deepEqual([...result.idxGrownCounts], [4, 12, 4]);
     assert.equal(result.idxGrownTris, 4);
     assert.ok(result.idxGrownPixel[0] > 200 && result.idxGrownPixel[1] < 40, `index-grown quad red: ${result.idxGrownPixel}`);
@@ -389,6 +393,15 @@ for (const backend of BACKENDS) {
     assert.equal(result.disc.negResize, true);
     assert.equal(result.disc.oobRange, true);
     assert.equal(result.disc.disposedThrows, true);
+  });
+
+  test(`[${backend}] LineVertex3D(pos, col, true) renders inside clipped SectionPlane half-space while false is clipped`, async () => {
+    const result = await run("lineSectionPlane", backend);
+    assert.equal(result.backend, backend);
+    assert.ok(result.unclippedGreen > 120, `unclipped line green: ${result.unclippedGreen}`);
+    assert.equal(result.clippedRed, 0, `clipped line with ignoreSectionPlane=false must discard: ${result.clippedRed}`);
+    assert.ok(result.exemptRgbaBlue > 120, `exempt RgbaColor line blue: ${result.exemptRgbaBlue}`);
+    assert.ok(result.exemptVec4Cyan > 120, `exempt Vector4 line cyan: ${result.exemptVec4Cyan}`);
   });
 }
 

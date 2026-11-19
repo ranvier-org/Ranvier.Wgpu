@@ -25,6 +25,30 @@ module private BufferHelpers =
             wgpuBufferDestroy buf
             wgpuBufferRelease buf
 
+    let inline vertexBytesU64 (count: int) =
+        uint64 count * uint64 sizeof<Vertex3D>
+
+    let inline vertexBytesNative (count: int) =
+        unativeint count * unativeint sizeof<Vertex3D>
+
+    let inline indexBytesNative (count: int) =
+        unativeint count * unativeint sizeof<uint32>
+
+    let inline alignedIndexBytesU64 (count: uint64) =
+        let raw = max 4uL (count * uint64 sizeof<uint32>)
+        (raw + 3uL) &&& ~~~3uL
+
+module private MeshValidation =
+    let validate (mesh: MeshData) =
+        if isNull (box mesh) then
+            nullArg (nameof mesh)
+
+        if isNull mesh.Vertices then
+            nullArg "mesh.Vertices"
+
+        if isNull mesh.Indices then
+            nullArg "mesh.Indices"
+
 [<Sealed>]
 type private DynamicBatchBuffer<'T when 'T: unmanaged>(device: nativeint, queue: nativeint, minCapacity: int, minActiveCount: int, ownerName: string)
     =
@@ -52,7 +76,7 @@ type private DynamicBatchBuffer<'T when 'T: unmanaged>(device: nativeint, queue:
                 && shadow.Length >= preserveCount
             then
                 Array.Copy (shadow, newShadow, preserveCount)
-                let copyBytes = unativeint (preserveCount * stride)
+                let copyBytes = unativeint preserveCount * unativeint stride
                 use p = fixed &newShadow[0]
                 wgpuQueueWriteBuffer (queue, buf, 0uL, NativePtr.toNativeInt p, copyBytes)
 
@@ -83,7 +107,7 @@ type private DynamicBatchBuffer<'T when 'T: unmanaged>(device: nativeint, queue:
             if activeCount < prevCount then
                 Array.Clear (shadow, activeCount, prevCount - activeCount)
 
-            let byteLen = unativeint (activeCount * stride)
+            let byteLen = unativeint activeCount * unativeint stride
             use p = fixed &MemoryMarshal.GetReference (items)
             wgpuQueueWriteBuffer (queue, buffer, 0uL, NativePtr.toNativeInt p, byteLen)
         elif prevCount > 0 && shadow.Length > 0 then
@@ -105,7 +129,11 @@ type private DynamicBatchBuffer<'T when 'T: unmanaged>(device: nativeint, queue:
             if not reallocated && buffer <> 0n then
                 Array.Clear (shadow, prevCount, newCount - prevCount)
                 let offsetBytes = uint64 prevCount * uint64 stride
-                let zeroBytes = unativeint ((newCount - prevCount) * stride)
+
+                let zeroBytes =
+                    unativeint (newCount - prevCount)
+                    * unativeint stride
+
                 use p = fixed &shadow[prevCount]
                 wgpuQueueWriteBuffer (queue, buffer, offsetBytes, NativePtr.toNativeInt p, zeroBytes)
         elif newCount < prevCount && shadow.Length > 0 then
@@ -133,7 +161,7 @@ type private DynamicBatchBuffer<'T when 'T: unmanaged>(device: nativeint, queue:
             ensureCapacity count count |> ignore
             items.CopyTo (shadow.AsSpan (startIndex, items.Length))
             let offsetBytes = uint64 startIndex * uint64 stride
-            let byteLen = unativeint (items.Length * stride)
+            let byteLen = unativeint items.Length * unativeint stride
             use p = fixed &MemoryMarshal.GetReference (items)
             wgpuQueueWriteBuffer (queue, buffer, offsetBytes, NativePtr.toNativeInt p, byteLen)
 
@@ -147,6 +175,8 @@ type private DynamicBatchBuffer<'T when 'T: unmanaged>(device: nativeint, queue:
 /// <summary>GPU-resident indexed triangle mesh uploaded to a <see cref="T:Ranvier.Wgpu.WgpuContext"/>.</summary>
 [<Sealed>]
 type MeshHandle internal (device: nativeint, queue: nativeint, mesh: MeshData) =
+    do MeshValidation.validate mesh
+
     let mutable disposed = false
     let mutable vertexCount = mesh.Vertices.Length
     let mutable vertexCapacity = max 1 mesh.Vertices.Length
@@ -155,30 +185,26 @@ type MeshHandle internal (device: nativeint, queue: nativeint, mesh: MeshData) =
     let mutable triangleCount = mesh.Indices.Length / 3
 
     let mutable vertexBuffer =
-        let byteLen = uint64 vertexCapacity * uint64 sizeof<Vertex3D>
+        let byteLen = BufferHelpers.vertexBytesU64 vertexCapacity
 
         let buf =
             BufferHelpers.createBuffer device (WGPUBufferUsage_Vertex ||| WGPUBufferUsage_CopyDst) byteLen "vertexBuffer"
 
         if mesh.Vertices.Length > 0 then
             use p = fixed mesh.Vertices
-            wgpuQueueWriteBuffer (queue, buf, 0uL, NativePtr.toNativeInt p, unativeint (mesh.Vertices.Length * sizeof<Vertex3D>))
+            wgpuQueueWriteBuffer (queue, buf, 0uL, NativePtr.toNativeInt p, BufferHelpers.vertexBytesNative mesh.Vertices.Length)
 
         buf
 
     let mutable indexBuffer =
-        let alignedBytes =
-            uint64 (
-                ((max 4 (indexCapacity * sizeof<uint32>)) + 3)
-                &&& ~~~3
-            )
+        let alignedBytes = BufferHelpers.alignedIndexBytesU64 (uint64 indexCapacity)
 
         let buf =
             BufferHelpers.createBuffer device (WGPUBufferUsage_Index ||| WGPUBufferUsage_CopyDst) alignedBytes "indexBuffer"
 
         if mesh.Indices.Length > 0 then
             use p = fixed mesh.Indices
-            wgpuQueueWriteBuffer (queue, buf, 0uL, NativePtr.toNativeInt p, unativeint (mesh.Indices.Length * sizeof<uint32>))
+            wgpuQueueWriteBuffer (queue, buf, 0uL, NativePtr.toNativeInt p, BufferHelpers.indexBytesNative mesh.Indices.Length)
 
         buf
 
@@ -191,7 +217,7 @@ type MeshHandle internal (device: nativeint, queue: nativeint, mesh: MeshData) =
 
         if req > vertexCapacity || vertexBuffer = 0n then
             let newCap = max req (max 4 (vertexCapacity * 2))
-            let bytes = uint64 newCap * uint64 sizeof<Vertex3D>
+            let bytes = BufferHelpers.vertexBytesU64 newCap
 
             let buf =
                 BufferHelpers.createBuffer device (WGPUBufferUsage_Vertex ||| WGPUBufferUsage_CopyDst) bytes "vertexBuffer"
@@ -205,8 +231,7 @@ type MeshHandle internal (device: nativeint, queue: nativeint, mesh: MeshData) =
 
         if req > indexCapacity || indexBuffer = 0n then
             let newCap = max req (max 4 (indexCapacity * 2))
-            let rawBytes = max 4 (newCap * sizeof<uint32>)
-            let alignedBytes = uint64 ((rawBytes + 3) &&& ~~~3)
+            let alignedBytes = BufferHelpers.alignedIndexBytesU64 (uint64 newCap)
 
             let buf =
                 BufferHelpers.createBuffer device (WGPUBufferUsage_Index ||| WGPUBufferUsage_CopyDst) alignedBytes "indexBuffer"
@@ -227,15 +252,9 @@ type MeshHandle internal (device: nativeint, queue: nativeint, mesh: MeshData) =
     member internal _.VertexBuffer = vertexBuffer
     member internal _.IndexBuffer = indexBuffer
 
-    member internal _.VertexBytes =
-        uint64 (max 1 vertexCount)
-        * uint64 sizeof<Vertex3D>
+    member internal _.VertexBytes = BufferHelpers.vertexBytesU64 (max 1 vertexCount)
 
-    member internal _.IndexBytes =
-        uint64 (
-            ((max 4 (int indexCount * sizeof<uint32>)) + 3)
-            &&& ~~~3
-        )
+    member internal _.IndexBytes = BufferHelpers.alignedIndexBytesU64 (uint64 indexCount)
 
     /// <summary>Replaces all vertices in the mesh vertex buffer in place, growing the GPU buffer if needed.</summary>
     member _.UpdateVertices(vertices: ReadOnlySpan<Vertex3D>) =
@@ -243,7 +262,7 @@ type MeshHandle internal (device: nativeint, queue: nativeint, mesh: MeshData) =
 
         if vertices.Length > 0 then
             ensureVertexCapacity vertices.Length
-            let byteLen = unativeint (vertices.Length * sizeof<Vertex3D>)
+            let byteLen = BufferHelpers.vertexBytesNative vertices.Length
             use p = fixed &MemoryMarshal.GetReference (vertices)
             wgpuQueueWriteBuffer (queue, vertexBuffer, 0uL, NativePtr.toNativeInt p, byteLen)
 
@@ -271,8 +290,8 @@ type MeshHandle internal (device: nativeint, queue: nativeint, mesh: MeshData) =
             )
 
         if vertices.Length > 0 then
-            let offsetBytes = uint64 startVertex * uint64 sizeof<Vertex3D>
-            let byteLen = unativeint (vertices.Length * sizeof<Vertex3D>)
+            let offsetBytes = BufferHelpers.vertexBytesU64 startVertex
+            let byteLen = BufferHelpers.vertexBytesNative vertices.Length
             use p = fixed &MemoryMarshal.GetReference (vertices)
             wgpuQueueWriteBuffer (queue, vertexBuffer, offsetBytes, NativePtr.toNativeInt p, byteLen)
 
@@ -283,19 +302,17 @@ type MeshHandle internal (device: nativeint, queue: nativeint, mesh: MeshData) =
     /// <summary>Replaces both vertex and index buffers from `mesh`, growing GPU buffers by doubling when capacity is exceeded.</summary>
     member _.UpdateMesh(mesh: MeshData) =
         ensureAlive ()
-
-        if isNull mesh.Vertices || isNull mesh.Indices then
-            nullArg (nameof mesh)
+        MeshValidation.validate mesh
 
         if mesh.Vertices.Length > 0 then
             ensureVertexCapacity mesh.Vertices.Length
-            let byteLen = unativeint (mesh.Vertices.Length * sizeof<Vertex3D>)
+            let byteLen = BufferHelpers.vertexBytesNative mesh.Vertices.Length
             use p = fixed mesh.Vertices
             wgpuQueueWriteBuffer (queue, vertexBuffer, 0uL, NativePtr.toNativeInt p, byteLen)
 
         if mesh.Indices.Length > 0 then
             ensureIndexCapacity mesh.Indices.Length
-            let byteLen = unativeint (mesh.Indices.Length * sizeof<uint32>)
+            let byteLen = BufferHelpers.indexBytesNative mesh.Indices.Length
             use p = fixed mesh.Indices
             wgpuQueueWriteBuffer (queue, indexBuffer, 0uL, NativePtr.toNativeInt p, byteLen)
 

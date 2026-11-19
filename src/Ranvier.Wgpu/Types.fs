@@ -111,6 +111,8 @@ type Vertex3D =
 /// <summary>
 /// 32-byte unlit 3D line-segment endpoint (`Position: float32x3`, `Pad: float32`, `Color: float32x4`).
 /// Pair consecutive vertices `(2k, 2k+1)` in a `LineBatch` for 4x-MSAA alpha-blended hairlines.
+/// Setting `Pad > 0.5f` (via the 3-arg constructor with `ignoreSectionPlane = true`) exempts the
+/// vertex's line segment from `SectionPlane` clipping.
 /// </summary>
 [<Struct; StructLayout(LayoutKind.Sequential)>]
 type LineVertex3D =
@@ -129,6 +131,20 @@ type LineVertex3D =
         {
             Position = pos
             Pad = 0.0f
+            Color = color
+        }
+
+    new(pos: Vector3, color: RgbaColor, ignoreSectionPlane: bool) =
+        {
+            Position = pos
+            Pad = (if ignoreSectionPlane then 1.0f else 0.0f)
+            Color = color.ToVector4 ()
+        }
+
+    new(pos: Vector3, color: Vector4, ignoreSectionPlane: bool) =
+        {
+            Position = pos
+            Pad = (if ignoreSectionPlane then 1.0f else 0.0f)
             Color = color
         }
 
@@ -458,8 +474,8 @@ module Camera3D =
         if not (isFinite fitRadius) || fitRadius <= 0.0f then
             raise (ArgumentOutOfRangeException (nameof fitRadius, "Camera fitRadius must be finite and greater than 0."))
 
-        if perspectiveness <> perspectiveness then
-            raise (ArgumentOutOfRangeException (nameof perspectiveness, "Camera perspectiveness cannot be NaN."))
+        if not (isFinite perspectiveness) then
+            raise (ArgumentOutOfRangeException (nameof perspectiveness, "Camera perspectiveness must be finite."))
 
         let p = Math.Clamp (perspectiveness, 0.0f, 1.0f)
 

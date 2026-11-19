@@ -626,7 +626,7 @@ module internal WebGl2Backend =
             member _.CreateVertexBuffer(byteLength) =
                 createBuffer Gl.ArrayBuffer byteLength Gl.DynamicDraw
 
-            // No vertex array is bound between passes, so this binding changes no batch's vertex array.
+            // `createBuffer` unbinds any active VAO (`gl.bindVertexArray null`) before binding `ELEMENT_ARRAY_BUFFER`.
             member _.CreateIndexBuffer(byteLength) =
                 createBuffer Gl.ElementArrayBuffer byteLength Gl.StaticDraw
 
