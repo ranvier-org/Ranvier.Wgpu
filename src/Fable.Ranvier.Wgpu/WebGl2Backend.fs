@@ -411,13 +411,14 @@ module internal WebGl2Backend =
             gl.bindVertexArray buffer.VertexArray
 
     /// <summary>
-    /// Draws the batches of one blend mode. Returns the pipeline left applied, so the caller applies a
-    /// pipeline only when it changes.
+    /// Draws the batches of one blend mode and backdrop-ordering slot. Returns the pipeline left applied, so the
+    /// caller applies a pipeline only when it changes.
     /// </summary>
     let private drawBatches<'Batch when 'Batch :> IInstanceDraw>
         (gl: Context)
         (batches: ReadOnlySpan<'Batch>)
         (alphaBlend: bool)
+        (wantBeforeLines: bool)
         (cullPipeline: Pipeline)
         (doublePipeline: Pipeline)
         (current: Pipeline)
@@ -433,6 +434,8 @@ module internal WebGl2Backend =
 
             if
                 batch.AlphaBlend = alphaBlend
+                && (not alphaBlend
+                    || batch.DrawBeforeLines = wantBeforeLines)
                 && count > 0
                 && indexCount > 0
             then
@@ -678,69 +681,101 @@ module internal WebGl2Backend =
                 gl.bindBuffer (Gl.UniformBuffer, userUniforms)
                 gl.bufferSubData (Gl.UniformBuffer, firstSlot * 16, data, firstSlot * 4, slotCount * 4)
 
-            member _.DrawPass(clear, batches, lines, discs, counters) =
-                let alpha = float (Math.Clamp (clear.A, 0.0f, 1.0f))
+            member _.DrawPass(isFirst, isLast, fullClear, subClear, viewport, batches, lines, discs, counters) =
                 gl.bindFramebuffer (Gl.Framebuffer, msaaFramebuffer)
-                gl.viewport (0, 0, width, height)
-                gl.clearColor (float clear.R * alpha, float clear.G * alpha, float clear.B * alpha, alpha)
-                // A clear writes depth only while depth writes are on.
-                gl.depthMask true
-                gl.clear (Gl.ColorBufferBit ||| Gl.DepthBufferBit)
-                counters.DrawCalls <- 0
-                counters.Instances <- 0
-                counters.Triangles <- 0
 
-                let batchSpan = batches.Span
-                let lineSpan = lines.Span
-                let discSpan = discs.Span
-                let linePipeline = resources.Line
-                let discPipeline = resources.Disc
+                if isFirst then
+                    let clear =
+                        fullClear
+                        |> ValueOption.defaultValue RgbaColor.darkBackdrop
 
-                let mutable last =
-                    drawBatches gl batchSpan false resources.OpaqueCull resources.OpaqueDouble Unchecked.defaultof<Pipeline> counters
+                    let alpha = float (Math.Clamp (clear.A, 0.0f, 1.0f))
+                    gl.disable Gl.ScissorTest
+                    gl.viewport (0, 0, width, height)
+                    gl.clearColor (float clear.R * alpha, float clear.G * alpha, float clear.B * alpha, alpha)
+                    // A clear writes depth only while depth writes are on.
+                    gl.depthMask true
+                    gl.clear (Gl.ColorBufferBit ||| Gl.DepthBufferBit)
 
-                for i = 0 to lineSpan.Length - 1 do
-                    let line = lineSpan[i] :> ILineDraw
-                    let vertexCount = line.VertexCount
+                match viewport with
+                | ValueNone -> ()
+                | ValueSome vp ->
+                    gl.viewport (vp.X, vp.Y, vp.Width, vp.Height)
+                    gl.enable Gl.ScissorTest
+                    gl.scissor (vp.X, vp.Y, vp.Width, vp.Height)
 
-                    if vertexCount >= 2 then
-                        if not (obj.ReferenceEquals (last, linePipeline)) then
-                            apply gl linePipeline
-                            last <- linePipeline
+                    if not isFirst || subClear.IsSome then
+                        gl.depthMask true
 
-                        bindSingle gl WebGpuBackend.lineLayouts (unbox line.VertexBuffer)
-                        gl.drawArrays (Gl.Lines, 0, vertexCount)
-                        counters.DrawCalls <- counters.DrawCalls + 1
+                        match subClear with
+                        | ValueSome sc ->
+                            let ca = float (Math.Clamp (sc.A, 0.0f, 1.0f))
+                            gl.clearColor (float sc.R * ca, float sc.G * ca, float sc.B * ca, ca)
+                            gl.clear (Gl.ColorBufferBit ||| Gl.DepthBufferBit)
+                        | ValueNone -> gl.clear Gl.DepthBufferBit
 
-                last <- drawBatches gl batchSpan true resources.BlendCull resources.BlendDouble last counters
+                    let batchSpan = batches.Span
+                    let lineSpan = lines.Span
+                    let discSpan = discs.Span
+                    let linePipeline = resources.Line
+                    let discPipeline = resources.Disc
 
-                for i = 0 to discSpan.Length - 1 do
-                    let disc = discSpan[i] :> IDiscDraw
-                    let count = disc.Count
+                    // 1. Opaque meshes
+                    let mutable last =
+                        drawBatches gl batchSpan false false resources.OpaqueCull resources.OpaqueDouble Unchecked.defaultof<Pipeline> counters
 
-                    if count > 0 then
-                        if not (obj.ReferenceEquals (last, discPipeline)) then
-                            apply gl discPipeline
-                            last <- discPipeline
+                    // 2. AlphaBlend backdrop batches drawn before hairlines
+                    last <- drawBatches gl batchSpan true true resources.BlendCull resources.BlendDouble last counters
 
-                        bindSingle gl WebGpuBackend.discLayouts (unbox disc.InstanceBuffer)
-                        gl.drawArraysInstanced (Gl.Triangles, 0, 6, count)
-                        counters.DrawCalls <- counters.DrawCalls + 1
-                        counters.Instances <- counters.Instances + count
-                        counters.Triangles <- counters.Triangles + count * 2
+                    // 3. 3D hairlines
+                    for i = 0 to lineSpan.Length - 1 do
+                        let line = lineSpan[i] :> ILineDraw
+                        let vertexCount = line.VertexCount
 
-                gl.bindVertexArray null
-                // Averages the four samples of each pixel. A multisampled blit cannot turn the frame over, so
-                // the canvas is filled from the resolved frame by a second one.
-                gl.bindFramebuffer (Gl.ReadFramebuffer, msaaFramebuffer)
-                gl.bindFramebuffer (Gl.DrawFramebuffer, resolveFramebuffer)
-                gl.blitFramebuffer (0, 0, width, height, 0, 0, width, height, Gl.ColorBufferBit, Gl.Nearest)
-                gl.invalidateFramebuffer (Gl.ReadFramebuffer, multisampled)
-                present ()
+                        if vertexCount >= 2 then
+                            if not (obj.ReferenceEquals (last, linePipeline)) then
+                                apply gl linePipeline
+                                last <- linePipeline
 
-            member _.PickAsync(px, py, batches, discs) =
+                            bindSingle gl WebGpuBackend.lineLayouts (unbox line.VertexBuffer)
+                            gl.drawArrays (Gl.Lines, 0, vertexCount)
+                            counters.DrawCalls <- counters.DrawCalls + 1
+
+                    // 4. Standard AlphaBlend batches drawn after hairlines
+                    last <- drawBatches gl batchSpan true false resources.BlendCull resources.BlendDouble last counters
+
+                    // 5. Camera-facing SDF discs
+                    for i = 0 to discSpan.Length - 1 do
+                        let disc = discSpan[i] :> IDiscDraw
+                        let count = disc.Count
+
+                        if count > 0 then
+                            if not (obj.ReferenceEquals (last, discPipeline)) then
+                                apply gl discPipeline
+                                last <- discPipeline
+
+                            bindSingle gl WebGpuBackend.discLayouts (unbox disc.InstanceBuffer)
+                            gl.drawArraysInstanced (Gl.Triangles, 0, 6, count)
+                            counters.DrawCalls <- counters.DrawCalls + 1
+                            counters.Instances <- counters.Instances + count
+                            counters.Triangles <- counters.Triangles + count * 2
+
+                    gl.bindVertexArray null
+                    gl.disable Gl.ScissorTest
+
+                if isLast then
+                    gl.disable Gl.ScissorTest
+                    // Averages the four samples of each pixel. A multisampled blit cannot turn the frame over, so
+                    // the canvas is filled from the resolved frame by a second one.
+                    gl.bindFramebuffer (Gl.ReadFramebuffer, msaaFramebuffer)
+                    gl.bindFramebuffer (Gl.DrawFramebuffer, resolveFramebuffer)
+                    gl.blitFramebuffer (0, 0, width, height, 0, 0, width, height, Gl.ColorBufferBit, Gl.Nearest)
+                    gl.invalidateFramebuffer (Gl.ReadFramebuffer, multisampled)
+                    present ()
+
+            member _.PickAsync(px, py, vp, batches, discs) =
                 gl.bindFramebuffer (Gl.Framebuffer, pickFramebuffer)
-                gl.viewport (0, 0, width, height)
+                gl.viewport (vp.X, vp.Y, vp.Width, vp.Height)
                 gl.enable Gl.ScissorTest
                 gl.scissor (px, py, 1, 1)
                 gl.depthMask true

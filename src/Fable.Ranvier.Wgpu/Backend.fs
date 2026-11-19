@@ -47,6 +47,7 @@ type internal IInstanceDraw =
     abstract Count: int
     abstract AlphaBlend: bool
     abstract DoubleSided: bool
+    abstract DrawBeforeLines: bool
 
 /// <summary>What a backend reads from a line batch. The buffer is null until the batch is first filled.</summary>
 type internal ILineDraw =
@@ -98,19 +99,27 @@ type internal ISceneBackend =
     abstract WriteUserUniforms: data: JS.Float32Array * firstSlot: int * slotCount: int -> unit
 
     /// <summary>
-    /// Draws one pass into the canvas with the uniforms last written: opaque batches, lines, blended batches,
-    /// then discs.
+    /// Draws one pass into the canvas with the uniforms last written: opaque batches, before-line blended
+    /// batches, lines, after-line blended batches, then discs.
     /// </summary>
     abstract DrawPass<'Batch, 'Line, 'Disc when 'Batch :> IInstanceDraw and 'Line :> ILineDraw and 'Disc :> IDiscDraw> :
-        clear: RgbaColor * batches: ReadOnlyMemory<'Batch> * lines: ReadOnlyMemory<'Line> * discs: ReadOnlyMemory<'Disc> * counters: PassCounters ->
+        isFirst: bool *
+        isLast: bool *
+        fullClear: RgbaColor voption *
+        subClear: RgbaColor voption *
+        viewport: ViewportRect voption *
+        batches: ReadOnlyMemory<'Batch> *
+        lines: ReadOnlyMemory<'Line> *
+        discs: ReadOnlyMemory<'Disc> *
+        counters: PassCounters ->
             unit
 
     /// <summary>
-    /// Draws the pick pass with the uniforms last written and reads the pixel at <c>(px, py)</c>, which is
-    /// inside the target.
+    /// Draws the pick pass with the uniforms last written inside <c>viewport</c> and reads the pixel at
+    /// <c>(px, py)</c>, which is inside both the target and <c>viewport</c>.
     /// </summary>
     abstract PickAsync<'Batch, 'Disc when 'Batch :> IInstanceDraw and 'Disc :> IDiscDraw> :
-        px: int * py: int * batches: ReadOnlyMemory<'Batch> * discs: ReadOnlyMemory<'Disc> -> JS.Promise<PickHit voption>
+        px: int * py: int * viewport: ViewportRect * batches: ReadOnlyMemory<'Batch> * discs: ReadOnlyMemory<'Disc> -> JS.Promise<PickHit voption>
 
     /// <summary>Reads the last pass drawn as straight RGBA bytes, rows from the top.</summary>
     abstract ReadPixelsAsync: unit -> JS.Promise<byte array>

@@ -213,6 +213,11 @@ vec4 fs_main() {
         lit = mix(lit, u.sectionStyle.xyz, edgeT * 0.88);
     }
 
+    bool exactColor = (flags & 8u) != 0u;
+    if (exactColor) {
+        return vec4(clamp(lit, vec3(0.0), vec3(1.0)) * alpha, alpha);
+    }
+
     vec3 mapped = lit / (lit + vec3(0.86));
     vec3 gamma = pow(clamp(mapped * 1.36, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.15));
     return vec4(gamma * alpha, alpha);
@@ -223,6 +228,9 @@ vec4 fs_main() {
 uvec4 fs_pick() {
     uint pickId = v_pickFlags.x;
     if (pickId == 0u) {
+        discard;
+    }
+    if (clamp(v_opacityEmissive.x, 0.0, 1.0) <= 0.002) {
         discard;
     }
     uint flags = v_pickFlags.y;
@@ -453,6 +461,9 @@ uvec4 fs_disc_pick() {
         discard;
     }
     uint flags = v_pickFlags.y;
+    if (v_fillColor.a <= 0.005 && (flags & 2u) == 0u) {
+        discard;
+    }
     bool ignoreClip = (flags & 4u) != 0u;
     bool sectionActive = (!ignoreClip) && (length(u.clipPlane.xyz) > 0.5);
     if (sectionActive && (dot(v_worldPos, u.clipPlane.xyz) + u.clipPlane.w) < 0.0) {

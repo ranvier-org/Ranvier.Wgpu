@@ -77,6 +77,7 @@ module internal WebGpu =
     type CompareFunction =
         | [<CompiledName "less">] Less
         | [<CompiledName "less-equal">] LessEqual
+        | [<CompiledName "always">] Always
 
     [<StringEnum; RequireQualifiedAccess>]
     type LoadOp =
@@ -214,6 +215,7 @@ module internal WebGpu =
         abstract setIndexBuffer: buffer: Buffer * indexFormat: string * offset: int * size: int -> unit
         abstract drawIndexed: indexCount: int * instanceCount: int -> unit
         abstract draw: vertexCount: int * instanceCount: int -> unit
+        abstract setViewport: x: float * y: float * width: float * height: float * minDepth: float * maxDepth: float -> unit
         abstract setScissorRect: x: int * y: int * width: int * height: int -> unit
         abstract ``end``: unit -> unit
 
