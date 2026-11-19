@@ -1,5 +1,5 @@
 ---
-last_commit_released: d5af73cabb4023f0d369b9ace7c69680b1f77e59
+last_commit_released: e947ae9567ba11dabb92446cc6355d8a10431a42
 depends_on:
   - ../Ranvier.Wgpu/
 updaters:
@@ -14,6 +14,14 @@ updaters:
 # Changelog
 
 This changelog is generated from conventional commits by [EasyBuild.ShipIt](https://github.com/easybuild-org/EasyBuild.ShipIt).
+
+## 0.2.3 - 2026-11-19
+
+### 🔗 Dependencies
+
+* `src/Ranvier.Wgpu` updated to 0.3.1
+
+<strong><small>[View changes on Github](https://github.com/ranvier-org/Ranvier.Wgpu/compare/d5af73cabb4023f0d369b9ace7c69680b1f77e59..e947ae9567ba11dabb92446cc6355d8a10431a42)</small></strong>
 
 ## 0.2.2 - 2026-11-18
 
