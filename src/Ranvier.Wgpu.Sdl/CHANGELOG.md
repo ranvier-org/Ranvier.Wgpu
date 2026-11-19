@@ -1,5 +1,5 @@
 ---
-last_commit_released: e947ae9567ba11dabb92446cc6355d8a10431a42
+last_commit_released: 78297af07f6b0c7b5bf25845d6247e0546e03166
 depends_on:
   - ../Ranvier.Wgpu/
 updaters:
@@ -14,6 +14,18 @@ updaters:
 # Changelog
 
 This changelog is generated from conventional commits by [EasyBuild.ShipIt](https://github.com/easybuild-org/EasyBuild.ShipIt).
+
+## 0.3.0 - 2026-11-19
+
+### 🚀 Features
+
+* *(wgpu)* Add multi-pass ViewportRect, backdrop alpha ordering, ExactColor, polyhedra, and pick fixes (#22) ([78297af](https://github.com/ranvier-org/Ranvier.Wgpu/commit/78297af07f6b0c7b5bf25845d6247e0546e03166))
+
+### 🔗 Dependencies
+
+* `src/Ranvier.Wgpu` updated to 0.4.0
+
+<strong><small>[View changes on Github](https://github.com/ranvier-org/Ranvier.Wgpu/compare/e947ae9567ba11dabb92446cc6355d8a10431a42..78297af07f6b0c7b5bf25845d6247e0546e03166)</small></strong>
 
 ## 0.2.3 - 2026-11-19
 

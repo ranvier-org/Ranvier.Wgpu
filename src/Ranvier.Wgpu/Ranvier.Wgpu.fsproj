@@ -6,7 +6,7 @@
     <RootNamespace>Ranvier.Wgpu</RootNamespace>
     <AssemblyName>Ranvier.Wgpu</AssemblyName>
     <PackageId>Ranvier.Wgpu</PackageId>
-    <Version>0.3.1</Version>
+    <Version>0.4.0</Version>
     <Title>Ranvier.Wgpu</Title>
     <Description>NativeAOT-compatible F# 3D and WebGPU (webgpu.h / wgpu-native) engine for Ranvier with runtime WGSL shaders, 4x MSAA, hardware instancing, BIM section clipping, SDF discs, and GPU pixel picking.</Description>
     <PackageTags>ranvier;fsharp;webgpu;wgpu;3d;graphics;wgsl;bim;native</PackageTags>
