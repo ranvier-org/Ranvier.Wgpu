@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "title": "WebGPU 3D (Wgpu)",
+  "description": "NativeAOT wgpu-native and browser WebGPU/WebGL2 3D instanced batches, lines, SDF discs, GPU picking, and zero-copy SDL3 surfaces.",
+  "index": "index.md",
+  "sections": [
+    {
+      "title": "WebGPU 3D",
+      "items": [
+        "index.md",
+        "engine-and-batches.md",
+        "sdl-and-fable.md"
+      ]
+    }
+  ]
+}
