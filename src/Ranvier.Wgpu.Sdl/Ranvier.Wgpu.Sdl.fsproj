@@ -7,7 +7,7 @@
     <AssemblyName>Ranvier.Wgpu.Sdl</AssemblyName>
     <PackageId>Ranvier.Wgpu.Sdl</PackageId>
     <PackageId Condition="'$(RanvierTrace)' == 'true'">Ranvier.Wgpu.Sdl.Traced</PackageId>
-    <Version>0.2.3</Version>
+    <Version>0.3.0</Version>
     <Title>Ranvier.Wgpu.Sdl</Title>
     <Description>Opt-in zero-copy GPU texture bridge binding Ranvier.Wgpu 3D scenes directly onto Ranvier.View.WebCore.Sdl DOM elements with natural HTML/CSS/SVG overlay compositing.</Description>
     <Description Condition="'$(RanvierTrace)' == 'true'">The traced build of Ranvier.Wgpu.Sdl, depending on Ranvier.View.WebCore.Sdl.Traced.</Description>

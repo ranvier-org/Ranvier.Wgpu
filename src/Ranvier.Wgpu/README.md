@@ -5,7 +5,7 @@ NativeAOT-compatible F# 3D and WebGPU (`webgpu.h` / `wgpu-native`) engine with r
 ## Install
 
 ```sh
-dotnet add package Ranvier.Wgpu --version 0.3.1
+dotnet add package Ranvier.Wgpu --version 0.4.0
 ```
 
 Pair with [`Ranvier.Wgpu.Sdl`](https://www.nuget.org/packages/Ranvier.Wgpu.Sdl) to bind `WgpuContext` scenes directly onto `Ranvier.View.WebCore.Sdl` DOM elements with zero-copy VRAM texture compositing.
