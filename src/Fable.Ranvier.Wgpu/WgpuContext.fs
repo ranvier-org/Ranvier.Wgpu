@@ -126,6 +126,7 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
                 match sectionPlane with
                 | Some s -> ValueSome s
                 | None -> ValueNone
+            Viewport = ValueNone
             Batches =
                 match batches with
                 | :? (InstanceBatch array) as arr -> ReadOnlyMemory<InstanceBatch>(arr)

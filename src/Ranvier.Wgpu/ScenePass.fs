@@ -3,7 +3,7 @@ namespace Ranvier.Wgpu
 open System
 
 /// <summary>
-/// Zero-allocation value description of a 3D scene pass (`Camera`, optional `ClearColor` / `Lighting` / `SectionPlane`,
+/// Zero-allocation value description of a 3D scene pass (`Camera`, optional `ClearColor` / `Lighting` / `SectionPlane` / `Viewport`,
 /// and contiguous `ReadOnlyMemory` slices of `InstanceBatch`, `LineBatch`, and `DiscBatch`).
 /// </summary>
 [<Struct; NoEquality; NoComparison>]
@@ -13,6 +13,7 @@ type ScenePass =
         ClearColor: RgbaColor voption
         Lighting: LightingRig voption
         SectionPlane: SectionPlane voption
+        Viewport: ViewportRect voption
         Batches: ReadOnlyMemory<InstanceBatch>
         LineBatches: ReadOnlyMemory<LineBatch>
         DiscBatches: ReadOnlyMemory<DiscBatch>
@@ -30,6 +31,7 @@ module ScenePass =
             ClearColor = ValueNone
             Lighting = ValueNone
             SectionPlane = ValueNone
+            Viewport = ValueNone
             Batches = ReadOnlyMemory.Empty
             LineBatches = ReadOnlyMemory.Empty
             DiscBatches = ReadOnlyMemory.Empty
@@ -51,6 +53,12 @@ module ScenePass =
     let inline withSection (plane: SectionPlane) (pass: ScenePass) : ScenePass =
         { pass with
             SectionPlane = ValueSome plane
+        }
+
+    /// <summary>Restricts rendering and picking for `pass` to the pixel sub-rectangle `viewport`.</summary>
+    let inline withViewport (viewport: ViewportRect) (pass: ScenePass) : ScenePass =
+        { pass with
+            Viewport = ValueSome viewport
         }
 
     /// <summary>Attaches an array of `InstanceBatch` draw batches to `pass` without copying.</summary>

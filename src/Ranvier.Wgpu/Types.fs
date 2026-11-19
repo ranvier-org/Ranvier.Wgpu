@@ -81,8 +81,54 @@ module RgbaColor =
     /// <summary>Opaque pure white `(1, 1, 1, 1)`.</summary>
     let white = RgbaColor (1.0f, 1.0f, 1.0f, 1.0f)
 
+    /// <summary>Opaque pure black `(0, 0, 0, 1)`.</summary>
+    let black = RgbaColor (0.0f, 0.0f, 0.0f, 1.0f)
+
+    /// <summary>Fully transparent black `(0, 0, 0, 0)`.</summary>
+    let transparent = RgbaColor (0.0f, 0.0f, 0.0f, 0.0f)
+
     /// <summary>Default deep-space dark backdrop `(0.016, 0.024, 0.043, 1)`.</summary>
     let darkBackdrop = RgbaColor (0.016f, 0.024f, 0.043f, 1.0f)
+
+    /// <summary>Linearly interpolates between <paramref name="a"/> and <paramref name="b"/> with <paramref name="t"/> clamped to `[0, 1]`.</summary>
+    /// <param name="a">Start color returned when <paramref name="t"/> is `0` or `NaN`.</param>
+    /// <param name="b">End color returned when <paramref name="t"/> is `1`.</param>
+    /// <param name="t">Interpolation factor clamped to `[0, 1]`.</param>
+    let lerp (a: RgbaColor) (b: RgbaColor) (t: float32) : RgbaColor =
+        if Single.IsNaN t then
+            a
+        else
+            let u = Math.Clamp (t, 0.0f, 1.0f)
+            RgbaColor (a.R + (b.R - a.R) * u, a.G + (b.G - a.G) * u, a.B + (b.B - a.B) * u, a.A + (b.A - a.A) * u)
+
+    /// <summary>Formats `color` as lowercase `#rrggbb` when rounded alpha is `255`, or `#rrggbbaa` otherwise.</summary>
+    let toHex (color: RgbaColor) : string =
+        let toByte (c: float32) =
+            if Single.IsNaN c then
+                0
+            else
+                int (MathF.Round (Math.Clamp (c, 0.0f, 1.0f) * 255.0f))
+
+        let hex = "0123456789abcdef"
+        let r = toByte color.R
+        let g = toByte color.G
+        let b = toByte color.B
+        let a = toByte color.A
+        let sb = System.Text.StringBuilder (if a = 255 then 7 else 9)
+
+        let appendByte (v: int) =
+            sb.Append (hex[v >>> 4]) |> ignore
+            sb.Append (hex[v &&& 0xF]) |> ignore
+
+        sb.Append ('#') |> ignore
+        appendByte r
+        appendByte g
+        appendByte b
+
+        if a <> 255 then
+            appendByte a
+
+        sb.ToString ()
 
 /// <summary>40-byte GPU mesh vertex (`Position: float32x3`, `Normal: float32x3`, `Color: float32x4`).</summary>
 [<Struct; StructLayout(LayoutKind.Sequential)>]
@@ -217,6 +263,14 @@ module InstanceFlags =
     [<Literal>]
     let IgnoreSectionPlane = 4u
 
+    /// <summary>Bypasses post-lighting Reinhard tone-mapping and gamma curve so scientific colormaps emit exact linear/sRGB colors.</summary>
+    [<Literal>]
+    let ExactColor = 8u
+
+    /// <summary>Marks this instance batch for per-fragment custom scalar LUT remapping (e.g. `Ranvier.D5.Wgpu.ColorShader`).</summary>
+    [<Literal>]
+    let UseColorLut = 16u
+
 /// <summary>
 /// 96-byte hardware GPU instance payload (4x4 world matrix, albedo/roughness, pick ID/flags, opacity/emissive).
 /// </summary>
@@ -283,6 +337,67 @@ type MeshData =
 
     override _.ToString() =
         "MeshData"
+
+/// <summary>Helpers for constructing and merging <see cref="T:Ranvier.Wgpu.MeshData"/> meshes.</summary>
+[<RequireQualifiedAccess>]
+module MeshData =
+    /// <summary>Empty mesh containing zero vertices and zero indices.</summary>
+    let empty: MeshData =
+        {
+            Vertices = Array.empty
+            Indices = Array.empty
+        }
+
+    /// <summary>Merges `meshes` into a single indexed <see cref="T:Ranvier.Wgpu.MeshData"/> with offset indices.</summary>
+    let merge (meshes: seq<MeshData>) : MeshData =
+        if isNull meshes then
+            empty
+        else
+            let items =
+                match meshes with
+                | :? (MeshData array) as arr -> arr
+                | _ -> Seq.toArray meshes
+
+            let mutable totalVerts = 0
+            let mutable totalInds = 0
+
+            for i = 0 to items.Length - 1 do
+                let m = items[i]
+
+                if not (isNull (box m)) then
+                    if not (isNull m.Vertices) then
+                        totalVerts <- totalVerts + m.Vertices.Length
+
+                    if not (isNull m.Indices) then
+                        totalInds <- totalInds + m.Indices.Length
+
+            if totalVerts = 0 && totalInds = 0 then
+                empty
+            else
+                let verts = Array.zeroCreate<Vertex3D> totalVerts
+                let inds = Array.zeroCreate<uint32> totalInds
+                let mutable vOff = 0
+                let mutable iOff = 0
+
+                for i = 0 to items.Length - 1 do
+                    let m = items[i]
+
+                    if not (isNull (box m)) then
+                        let baseVertex = uint32 vOff
+
+                        if not (isNull m.Vertices) && m.Vertices.Length > 0 then
+                            Array.Copy (m.Vertices, 0, verts, vOff, m.Vertices.Length)
+                            vOff <- vOff + m.Vertices.Length
+
+                        if not (isNull m.Indices) && m.Indices.Length > 0 then
+                            let srcInds = m.Indices
+
+                            for j = 0 to srcInds.Length - 1 do
+                                inds[iOff + j] <- baseVertex + srcInds[j]
+
+                            iOff <- iOff + srcInds.Length
+
+                { Vertices = verts; Indices = inds }
 
 /// <summary>Color-attachment blending mode for an `InstanceBatch`.</summary>
 [<RequireQualifiedAccess; Struct>]
@@ -615,3 +730,47 @@ type FrameMetrics =
 
     override _.ToString() =
         "FrameMetrics"
+
+/// <summary>Pixel sub-rectangle `(X, Y, Width, Height)` measured from the top-left `(0, 0)` of a render target.</summary>
+[<Struct>]
+type ViewportRect =
+    {
+        X: int
+        Y: int
+        Width: int
+        Height: int
+    }
+
+    /// <summary>Returns `true` when pixel `(px, py)` falls inside this rectangle.</summary>
+    member this.Contains(px: int, py: int) =
+        px >= this.X
+        && py >= this.Y
+        && px < this.X + this.Width
+        && py < this.Y + this.Height
+
+    override _.ToString() =
+        "ViewportRect"
+
+/// <summary>Constructors for <see cref="T:Ranvier.Wgpu.ViewportRect"/>.</summary>
+[<RequireQualifiedAccess>]
+module ViewportRect =
+    /// <summary>Creates a validated positive-dimension `ViewportRect` (`X >= 0`, `Y >= 0`, `Width >= 1`, `Height >= 1`).</summary>
+    let create (x: int) (y: int) (width: int) (height: int) : ViewportRect =
+        if x < 0 then
+            raise (ArgumentOutOfRangeException (nameof x, "ViewportRect X must be non-negative."))
+
+        if y < 0 then
+            raise (ArgumentOutOfRangeException (nameof y, "ViewportRect Y must be non-negative."))
+
+        if width <= 0 then
+            raise (ArgumentOutOfRangeException (nameof width, "ViewportRect Width must be positive."))
+
+        if height <= 0 then
+            raise (ArgumentOutOfRangeException (nameof height, "ViewportRect Height must be positive."))
+
+        {
+            X = x
+            Y = y
+            Width = width
+            Height = height
+        }

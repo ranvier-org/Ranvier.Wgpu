@@ -4,24 +4,126 @@ open System
 open System.Collections.Generic
 open System.Numerics
 
+module private MeshBuilderHelpers =
+    let inline isFiniteVec (v: Vector3) =
+        let inline fin (x: float32) =
+            x - x = 0.0f
+
+        fin v.X && fin v.Y && fin v.Z
+
+    let appendConvexPolyhedron
+        (dstVerts: ResizeArray<Vertex3D>)
+        (dstInds: ResizeArray<uint32>)
+        (srcVerts: ReadOnlySpan<Vector3>)
+        (faces: IReadOnlyList<int array>)
+        (color: RgbaColor)
+        =
+        if isNull faces then
+            nullArg (nameof faces)
+
+        if srcVerts.Length > 0 && faces.Count > 0 then
+            let seen = HashSet<int>()
+            let mutable polySum = Vector3.Zero
+            let mutable polyCount = 0
+
+            for fi = 0 to faces.Count - 1 do
+                let f = faces[fi]
+
+                if not (isNull f) && f.Length >= 3 then
+                    for k = 0 to f.Length - 1 do
+                        let idx = f[k]
+
+                        if idx < 0 || idx >= srcVerts.Length then
+                            raise (
+                                ArgumentOutOfRangeException (
+                                    nameof faces,
+                                    $"Face vertex index {idx} is out of bounds for {srcVerts.Length} vertices."
+                                )
+                            )
+
+                        if seen.Add idx && isFiniteVec srcVerts[idx] then
+                            polySum <- polySum + srcVerts[idx]
+                            polyCount <- polyCount + 1
+
+            if polyCount = 0 then
+                for i = 0 to srcVerts.Length - 1 do
+                    let p = srcVerts[i]
+
+                    if isFiniteVec p then
+                        polySum <- polySum + p
+                        polyCount <- polyCount + 1
+
+            if polyCount > 0 then
+                let polyCentroid = polySum / float32 polyCount
+                let tint = color.ToVector4 ()
+
+                for fi = 0 to faces.Count - 1 do
+                    let f = faces[fi]
+
+                    if not (isNull f) && f.Length >= 3 then
+                        let nCount = f.Length
+                        let mutable faceSum = Vector3.Zero
+                        let mutable allFinite = true
+
+                        for k = 0 to nCount - 1 do
+                            let p = srcVerts[f[k]]
+
+                            if not (isFiniteVec p) then
+                                allFinite <- false
+                            else
+                                faceSum <- faceSum + p
+
+                        if allFinite then
+                            let faceCenter = faceSum / float32 nCount
+                            let mutable rawNormal = Vector3.Zero
+
+                            for k = 0 to nCount - 1 do
+                                let a = srcVerts[f[k]] - faceCenter
+                                let b = srcVerts[f[(k + 1) % nCount]] - faceCenter
+                                rawNormal.X <- rawNormal.X + (a.Y - b.Y) * (a.Z + b.Z)
+                                rawNormal.Y <- rawNormal.Y + (a.Z - b.Z) * (a.X + b.X)
+                                rawNormal.Z <- rawNormal.Z + (a.X - b.X) * (a.Y + b.Y)
+
+                            if rawNormal.LengthSquared () > 1e-12f then
+                                let mutable normal = Vector3.Normalize rawNormal
+                                let inward = Vector3.Dot (normal, faceCenter - polyCentroid) < 0.0f
+
+                                if inward then
+                                    normal <- -normal
+
+                                let baseIdx = uint32 dstVerts.Count
+
+                                for k = 0 to nCount - 1 do
+                                    dstVerts.Add (Vertex3D (srcVerts[f[k]], normal, tint))
+
+                                for k = 1 to nCount - 2 do
+                                    dstInds.Add baseIdx
+
+                                    if inward then
+                                        dstInds.Add (baseIdx + uint32 (k + 1))
+                                        dstInds.Add (baseIdx + uint32 k)
+                                    else
+                                        dstInds.Add (baseIdx + uint32 k)
+                                        dstInds.Add (baseIdx + uint32 (k + 1))
+
 /// <summary>
 /// Mutable builder merging transformed meshes, 3D tubes, line segments, and reference grids into one `MeshData`.
 /// </summary>
 type MeshBuilder() =
-    let vertices = ResizeArray<Vertex3D>(1024)
-    let indices = ResizeArray<uint32>(3072)
+    let vertBuf = ResizeArray<Vertex3D>(1024)
+    let indBuf = ResizeArray<uint32>(3072)
 
     /// <summary>Current accumulated vertex count.</summary>
-    member _.VertexCount = vertices.Count
+    member _.VertexCount = vertBuf.Count
     /// <summary>Current accumulated triangle index count.</summary>
-    member _.IndexCount = indices.Count
+    member _.IndexCount = indBuf.Count
 
     /// <summary>Appends <paramref name="mesh"/> transformed by <paramref name="transform"/> and tinted by <paramref name="color"/>.</summary>
     /// <param name="mesh">Source mesh geometry.</param>
     /// <param name="transform">World/local transform matrix (automatically flips winding when determinant is negative).</param>
     /// <param name="color">Per-part multiplicative vertex color tint.</param>
     member _.AddMesh(mesh: MeshData, transform: Matrix4x4, color: RgbaColor) =
-        let baseIdx = uint32 vertices.Count
+        let baseIdx = uint32 vertBuf.Count
         let c0 = Vector3 (transform.M11, transform.M12, transform.M13)
         let c1 = Vector3 (transform.M21, transform.M22, transform.M23)
         let c2 = Vector3 (transform.M31, transform.M32, transform.M33)
@@ -46,25 +148,48 @@ type MeshBuilder() =
                 else
                     Vector3.UnitY
 
-            vertices.Add (Vertex3D (wp, wn, v.Color * tint))
+            vertBuf.Add (Vertex3D (wp, wn, v.Color * tint))
 
         if detSign > 0.0f then
             for idx in mesh.Indices do
-                indices.Add (baseIdx + idx)
+                indBuf.Add (baseIdx + idx)
         else
             let mutable i = 0
 
             while i + 2 < mesh.Indices.Length do
-                indices.Add (baseIdx + mesh.Indices[i])
-                indices.Add (baseIdx + mesh.Indices[i + 2])
-                indices.Add (baseIdx + mesh.Indices[i + 1])
+                indBuf.Add (baseIdx + mesh.Indices[i])
+                indBuf.Add (baseIdx + mesh.Indices[i + 2])
+                indBuf.Add (baseIdx + mesh.Indices[i + 1])
                 i <- i + 3
+
+    /// <summary>Appends `mesh` vertices and offset indices directly without matrix multiplication or tinting.</summary>
+    member _.AddRawMesh(mesh: MeshData) =
+        if isNull (box mesh) then
+            nullArg (nameof mesh)
+
+        if isNull mesh.Vertices then
+            nullArg "mesh.Vertices"
+
+        if isNull mesh.Indices then
+            nullArg "mesh.Indices"
+
+        let baseIdx = uint32 vertBuf.Count
+
+        for v in mesh.Vertices do
+            vertBuf.Add v
+
+        for idx in mesh.Indices do
+            indBuf.Add (baseIdx + idx)
+
+    /// <summary>Appends a flat-shaded convex polyhedron from vertex positions and polygon face loops, normalizing all faces to outward CCW winding.</summary>
+    member _.AddConvexPolyhedron(vertices: ReadOnlySpan<Vector3>, faces: IReadOnlyList<int array>, color: RgbaColor) =
+        MeshBuilderHelpers.appendConvexPolyhedron vertBuf indBuf vertices faces color
 
     /// <summary>Appends a smooth 3D cylindrical tube along `points` (`sides` at least 3, typically 4 or 6).</summary>
     member _.AddTube(points: ReadOnlySpan<Vector3>, radius: float32, sides: int, startColor: RgbaColor, endColor: RgbaColor) =
         if points.Length >= 2 && sides >= 3 then
             let nPts = points.Length
-            let baseVertex = uint32 vertices.Count
+            let baseVertex = uint32 vertBuf.Count
             let mutable prevUp = Vector3.UnitY
 
             for i = 0 to nPts - 1 do
@@ -102,7 +227,7 @@ type MeshBuilder() =
                 for s = 0 to sides - 1 do
                     let ang = float32 s / float32 sides * MathF.PI * 2.0f
                     let nrm = side * MathF.Cos ang + up * MathF.Sin ang
-                    vertices.Add (Vertex3D (p + nrm * radius, nrm, col))
+                    vertBuf.Add (Vertex3D (p + nrm * radius, nrm, col))
 
             for i = 0 to nPts - 2 do
                 let ring0 = baseVertex + uint32 (i * sides)
@@ -114,12 +239,12 @@ type MeshBuilder() =
                     let b = ring0 + uint32 sNext
                     let c = ring1 + uint32 sNext
                     let d = ring1 + uint32 s
-                    indices.Add a
-                    indices.Add c
-                    indices.Add b
-                    indices.Add a
-                    indices.Add d
-                    indices.Add c
+                    indBuf.Add a
+                    indBuf.Add c
+                    indBuf.Add b
+                    indBuf.Add a
+                    indBuf.Add d
+                    indBuf.Add c
 
     /// <summary>Appends a single straight line segment as a thin 4-sided 3D prism.</summary>
     member this.AddLineSegment(a: Vector3, b: Vector3, thickness: float32, color: RgbaColor) =
@@ -142,8 +267,8 @@ type MeshBuilder() =
     /// <summary>Materializes the accumulated geometry as an immutable `MeshData` record.</summary>
     member _.ToMeshData() : MeshData =
         {
-            Vertices = vertices.ToArray ()
-            Indices = indices.ToArray ()
+            Vertices = vertBuf.ToArray ()
+            Indices = indBuf.ToArray ()
         }
 
 /// <summary>Unit-scale procedural 3D mesh primitives centered at the origin.</summary>
@@ -513,3 +638,15 @@ module Primitives =
             Vertices = verts.ToArray ()
             Indices = inds.ToArray ()
         }
+
+    /// <summary>Builds a flat-shaded outward-wound convex polyhedron mesh from vertex positions and polygon face loops.</summary>
+    let convexPolyhedron (vertices: Vector3 array) (faces: IReadOnlyList<int array>) (color: RgbaColor) : MeshData =
+        if isNull vertices then
+            nullArg (nameof vertices)
+
+        if isNull faces then
+            nullArg (nameof faces)
+
+        let mb = MeshBuilder ()
+        mb.AddConvexPolyhedron (ReadOnlySpan<Vector3>(vertices), faces, color)
+        mb.ToMeshData ()

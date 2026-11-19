@@ -21,6 +21,39 @@ type internal GpuSceneUniforms =
     val mutable RimLight: Vector4
     val mutable SectionStyle: Vector4
 
+[<Struct; StructLayout(LayoutKind.Sequential)>]
+type private ClearVertex =
+    val mutable Pos: Vector2
+    val mutable Color: Vector4
+
+module private SubViewportClear =
+    [<Literal>]
+    let Wgsl =
+        """
+struct ClearVsIn {
+    @location(0) pos: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+struct ClearVsOut {
+    @builtin(position) clipPos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_clear(in: ClearVsIn) -> ClearVsOut {
+    var out: ClearVsOut;
+    out.clipPos = vec4<f32>(in.pos, 0.0, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+@fragment
+fn fs_clear(in: ClearVsOut) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"""
+
 module private WgpuCallbacks =
     let mutable lastAdapterStatus = 0u
     let mutable lastAdapterHandle = 0n
@@ -889,9 +922,104 @@ type WgpuContext
     let discPickPipeline =
         buildDiscPipeline discPickModule "fs_disc_pick" WGPUTextureFormat_RGBA32Uint 1u false true
 
+    let clearShaderModule = compileModule SubViewportClear.Wgsl
+
+    let clearPipelineLayout =
+        let mutable desc = WGPUPipelineLayoutDescriptor ()
+        desc.Label <- WGPUStringView.Null
+        desc.BindGroupLayoutCount <- 0un
+        desc.BindGroupLayouts <- 0n
+        let pl = wgpuDeviceCreatePipelineLayout (device, addrOf &desc)
+
+        if pl = 0n then
+            failwith "wgpuDeviceCreatePipelineLayout (clearPipeline) failed."
+
+        pl
+
+    let clearPipeline =
+        let attrs =
+            [|
+                let mutable a0 = WGPUVertexAttribute () in
+                a0.Format <- WGPUVertexFormat_Float32x2
+                a0.Offset <- 0uL
+                a0.ShaderLocation <- 0u
+                a0
+                let mutable a1 = WGPUVertexAttribute () in
+                a1.Format <- WGPUVertexFormat_Float32x4
+                a1.Offset <- 8uL
+                a1.ShaderLocation <- 1u
+                a1
+            |]
+
+        use pA = fixed attrs
+        let mutable vLayout = WGPUVertexBufferLayout ()
+        vLayout.StepMode <- WGPUVertexStepMode_Vertex
+        vLayout.ArrayStride <- uint64 sizeof<ClearVertex>
+        vLayout.AttributeCount <- unativeint attrs.Length
+        vLayout.Attributes <- NativePtr.toNativeInt pA
+
+        withUtf8View "vs_clear" (fun vsView ->
+            withUtf8View "fs_clear" (fun fsView ->
+                let mutable target = WGPUColorTargetState ()
+                target.Format <- colorTargetFormat
+                target.Blend <- 0n
+                target.WriteMask <- WGPUColorWriteMask_All
+
+                let mutable frag = WGPUFragmentState ()
+                frag.Module <- clearShaderModule
+                frag.EntryPoint <- fsView
+                frag.TargetCount <- 1un
+                frag.Targets <- addrOf &target
+
+                let mutable ds = WGPUDepthStencilState ()
+                ds.Format <- WGPUTextureFormat_Depth32Float
+                ds.DepthWriteEnabled <- WGPUOptionalBool_False
+                ds.DepthCompare <- WGPUCompareFunction_Always
+                ds.StencilFront.Compare <- WGPUCompareFunction_Always
+                ds.StencilFront.FailOp <- WGPUStencilOperation_Keep
+                ds.StencilFront.DepthFailOp <- WGPUStencilOperation_Keep
+                ds.StencilFront.PassOp <- WGPUStencilOperation_Keep
+                ds.StencilBack <- ds.StencilFront
+
+                let mutable rp = WGPURenderPipelineDescriptor ()
+                rp.Label <- WGPUStringView.Null
+                rp.Layout <- clearPipelineLayout
+                rp.Vertex.Module <- clearShaderModule
+                rp.Vertex.EntryPoint <- vsView
+                rp.Vertex.BufferCount <- 1un
+                rp.Vertex.Buffers <- addrOf &vLayout
+                rp.Primitive.Topology <- WGPUPrimitiveTopology_TriangleList
+                rp.Primitive.FrontFace <- WGPUFrontFace_CCW
+                rp.Primitive.CullMode <- WGPUCullMode_None
+                rp.DepthStencil <- addrOf &ds
+                rp.Multisample.Count <- 4u
+                rp.Multisample.Mask <- 0xFFFFFFFFu
+                rp.Fragment <- addrOf &frag
+
+                let p = wgpuDeviceCreateRenderPipeline (device, addrOf &rp)
+
+                if p = 0n then
+                    failwith "wgpuDeviceCreateRenderPipeline (clearPipeline) failed."
+
+                p))
+
+    let clearVertexBuffer =
+        let mutable desc = WGPUBufferDescriptor ()
+
+        desc.Usage <- WGPUBufferUsage_Vertex ||| WGPUBufferUsage_CopyDst
+
+        desc.Size <- uint64 (6 * sizeof<ClearVertex>)
+        let b = wgpuDeviceCreateBuffer (device, addrOf &desc)
+
+        if b = 0n then
+            failwith "wgpuDeviceCreateBuffer (clearVertexBuffer) failed."
+
+        b
+
     let releasePipelineState () =
         for pipeline in
             [|
+                clearPipeline
                 discPickPipeline
                 discPipeline
                 linePipeline
@@ -905,6 +1033,9 @@ type WgpuContext
             if pipeline <> 0n then
                 wgpuRenderPipelineRelease pipeline
 
+        if clearPipelineLayout <> 0n then
+            wgpuPipelineLayoutRelease clearPipelineLayout
+
         if pipelineLayout <> 0n then
             wgpuPipelineLayoutRelease pipelineLayout
 
@@ -914,12 +1045,12 @@ type WgpuContext
         if bindGroupLayout <> 0n then
             wgpuBindGroupLayoutRelease bindGroupLayout
 
-        for buffer in [| uniformBuffer; userUniformBuffer |] do
+        for buffer in [| uniformBuffer; userUniformBuffer; clearVertexBuffer |] do
             if buffer <> 0n then
                 wgpuBufferDestroy buffer
                 wgpuBufferRelease buffer
 
-        for shader in [| shaderModule; stockModule |] do
+        for shader in [| clearShaderModule; shaderModule; stockModule |] do
             if shader <> 0n then
                 wgpuShaderModuleRelease shader
 
@@ -1098,166 +1229,334 @@ type WgpuContext
 
     do allocateTargets curWidth curHeight
 
-    let writeSceneUniforms (camera: Camera3D) (lighting: LightingRig) (sectionPlane: SectionPlane) =
+    let resolveViewport (ctxW: int) (ctxH: int) (vpOpt: ViewportRect voption) : ViewportRect voption =
+        if ctxW <= 0 || ctxH <= 0 then
+            ValueNone
+        else
+            match vpOpt with
+            | ValueNone ->
+                ValueSome
+                    {
+                        X = 0
+                        Y = 0
+                        Width = ctxW
+                        Height = ctxH
+                    }
+            | ValueSome vp ->
+                let x0 = max 0 vp.X
+                let y0 = max 0 vp.Y
+                let x1 = int (min (int64 ctxW) (int64 vp.X + int64 vp.Width))
+                let y1 = int (min (int64 ctxH) (int64 vp.Y + int64 vp.Height))
+                let w = x1 - x0
+                let h = y1 - y0
+
+                if w <= 0 || h <= 0 then
+                    ValueNone
+                else
+                    ValueSome
+                        {
+                            X = x0
+                            Y = y0
+                            Width = w
+                            Height = h
+                        }
+
+    let writeClearQuad (color: RgbaColor) =
+        let ca = Math.Clamp (color.A, 0.0f, 1.0f)
+        let premul = Vector4 (color.R * ca, color.G * ca, color.B * ca, ca)
+
+        let verts =
+            [|
+                ClearVertex (Pos = Vector2 (-1.0f, -1.0f), Color = premul)
+                ClearVertex (Pos = Vector2 (1.0f, -1.0f), Color = premul)
+                ClearVertex (Pos = Vector2 (1.0f, 1.0f), Color = premul)
+                ClearVertex (Pos = Vector2 (-1.0f, -1.0f), Color = premul)
+                ClearVertex (Pos = Vector2 (1.0f, 1.0f), Color = premul)
+                ClearVertex (Pos = Vector2 (-1.0f, 1.0f), Color = premul)
+            |]
+
+        use p = fixed verts
+        wgpuQueueWriteBuffer (queue, clearVertexBuffer, 0uL, NativePtr.toNativeInt p, unativeint (verts.Length * sizeof<ClearVertex>))
+
+    let writeSceneUniforms (vpWidth: int) (vpHeight: int) (camera: Camera3D) (lighting: LightingRig) (sectionPlane: SectionPlane) =
         let mutable u = GpuSceneUniforms ()
-        u.ViewProj <- Camera3D.viewProjMatrix curWidth curHeight camera
+        u.ViewProj <- Camera3D.viewProjMatrix vpWidth vpHeight camera
         u.CamPos <- Vector4 (camera.Position, 0.0f)
         u.ClipPlane <- sectionPlane.AsUniformVector4 ()
-        u.SkyColor <- Vector4 (lighting.SkyColor, float32 curWidth)
-        u.GroundColor <- Vector4 (lighting.GroundColor, float32 curHeight)
+        u.SkyColor <- Vector4 (lighting.SkyColor, float32 vpWidth)
+        u.GroundColor <- Vector4 (lighting.GroundColor, float32 vpHeight)
         u.KeyLight <- Vector4 (Vector3.Normalize lighting.KeyLightDir, lighting.KeyLightIntensity)
         u.RimLight <- Vector4 (Vector3.Normalize lighting.RimLightDir, lighting.RimLightIntensity)
         u.SectionStyle <- Vector4 (lighting.SectionContourColor, lighting.SectionContourWidth)
         wgpuQueueWriteBuffer (queue, uniformBuffer, 0uL, addrOf &u, unativeint sizeof<GpuSceneUniforms>)
 
-    let submitScenePass (scene: ScenePass) (resolveTargetView: nativeint) : struct (int64 * int64 * int * int * int) =
-        renderCalls <- renderCalls + 1
+    let encodeInstanceBatches
+        (pass: nativeint)
+        (batchSpan: ReadOnlySpan<InstanceBatch>)
+        (wantBlend: BlendMode)
+        (wantBeforeLines: bool)
+        (cullPipe: nativeint)
+        (doublePipe: nativeint)
+        (lastPipeline: byref<nativeint>)
+        (drawCalls: byref<int>)
+        (totalInstances: byref<int>)
+        (totalTris: byref<int>)
+        =
+        for i = 0 to batchSpan.Length - 1 do
+            let b = batchSpan[i]
 
-        let clear =
-            match scene.ClearColor with
-            | ValueSome c -> c
-            | ValueNone -> RgbaColor.darkBackdrop
+            if
+                b.BlendMode = wantBlend
+                && (wantBlend <> BlendMode.AlphaBlend
+                    || b.DrawBeforeLines = wantBeforeLines)
+                && b.Count > 0
+                && b.Mesh.IndexCount > 0u
+            then
+                let pipe = if b.DoubleSided then doublePipe else cullPipe
 
-        let rig =
-            match scene.Lighting with
-            | ValueSome l -> l
-            | ValueNone -> LightingRig.studioDefault
+                if pipe <> lastPipeline then
+                    wgpuRenderPassEncoderSetPipeline (pass, pipe)
+                    lastPipeline <- pipe
 
-        let clip =
-            match scene.SectionPlane with
-            | ValueSome s -> s
-            | ValueNone -> SectionPlane.disabled
+                wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, b.Mesh.VertexBuffer, 0uL, b.Mesh.VertexBytes)
+                wgpuRenderPassEncoderSetVertexBuffer (pass, 1u, b.InstanceBuffer, 0uL, b.ActiveBytes)
+                wgpuRenderPassEncoderSetIndexBuffer (pass, b.Mesh.IndexBuffer, WGPUIndexFormat_Uint32, 0uL, b.Mesh.IndexBytes)
+                wgpuRenderPassEncoderDrawIndexed (pass, b.Mesh.IndexCount, uint32 b.Count, 0u, 0, 0u)
+                drawCalls <- drawCalls + 1
+                totalInstances <- totalInstances + b.Count
+                totalTris <- totalTris + (b.Mesh.TriangleCount * b.Count)
 
+    let submitScenePasses
+        (passes: ReadOnlySpan<ScenePass>)
+        (clearColorOpt: RgbaColor voption)
+        (resolveTargetView: nativeint)
+        : struct (int64 * int64 * int * int * int) =
+        renderCalls <- renderCalls + max 1 passes.Length
         let t0 = Stopwatch.GetTimestamp ()
-        writeSceneUniforms scene.Camera rig clip
-
-        let enc = wgpuDeviceCreateCommandEncoder (device, 0n)
-        let clearAlpha = float (Math.Clamp (clear.A, 0.0f, 1.0f))
-        let mutable colorAtt = WGPURenderPassColorAttachment ()
-        colorAtt.View <- msaaColorView
-        colorAtt.DepthSlice <- WGPU_DEPTH_SLICE_UNDEFINED
-        colorAtt.ResolveTarget <- resolveTargetView
-        colorAtt.LoadOp <- WGPULoadOp_Clear
-        colorAtt.StoreOp <- WGPUStoreOp_Store
-        colorAtt.ClearValue.R <- float clear.R * clearAlpha
-        colorAtt.ClearValue.G <- float clear.G * clearAlpha
-        colorAtt.ClearValue.B <- float clear.B * clearAlpha
-        colorAtt.ClearValue.A <- clearAlpha
-
-        let mutable depthAtt = WGPURenderPassDepthStencilAttachment ()
-        depthAtt.View <- msaaDepthView
-        depthAtt.DepthLoadOp <- WGPULoadOp_Clear
-        depthAtt.DepthStoreOp <- WGPUStoreOp_Discard
-        depthAtt.DepthClearValue <- 1.0f
-
-        let mutable rpDesc = WGPURenderPassDescriptor ()
-        rpDesc.Label <- WGPUStringView.Null
-        rpDesc.ColorAttachmentCount <- 1un
-        rpDesc.ColorAttachments <- addrOf &colorAtt
-        rpDesc.DepthStencilAttachment <- addrOf &depthAtt
-
-        let pass = wgpuCommandEncoderBeginRenderPass (enc, addrOf &rpDesc)
-        wgpuRenderPassEncoderSetBindGroup (pass, 0u, bindGroup, 0un, 0n)
-
         let mutable drawCalls = 0
         let mutable totalInstances = 0
         let mutable totalTris = 0
-        let mutable lastPipeline = 0n
+        let mutable lastSubIdx = 0uL
 
-        let batchSpan = scene.Batches.Span
-        let lineSpan = scene.LineBatches.Span
-        let discSpan = scene.DiscBatches.Span
+        if passes.Length = 0 then
+            let clear =
+                clearColorOpt
+                |> ValueOption.defaultValue RgbaColor.darkBackdrop
 
-        for i = 0 to batchSpan.Length - 1 do
-            let b = batchSpan[i]
+            let enc = wgpuDeviceCreateCommandEncoder (device, 0n)
+            let clearAlpha = float (Math.Clamp (clear.A, 0.0f, 1.0f))
+            let mutable colorAtt = WGPURenderPassColorAttachment ()
+            colorAtt.View <- msaaColorView
+            colorAtt.DepthSlice <- WGPU_DEPTH_SLICE_UNDEFINED
+            colorAtt.ResolveTarget <- resolveTargetView
+            colorAtt.LoadOp <- WGPULoadOp_Clear
+            colorAtt.StoreOp <- WGPUStoreOp_Store
+            colorAtt.ClearValue.R <- float clear.R * clearAlpha
+            colorAtt.ClearValue.G <- float clear.G * clearAlpha
+            colorAtt.ClearValue.B <- float clear.B * clearAlpha
+            colorAtt.ClearValue.A <- clearAlpha
 
-            if
-                b.BlendMode = BlendMode.Opaque
-                && b.Count > 0
-                && b.Mesh.IndexCount > 0u
-            then
-                let pipe =
-                    if b.DoubleSided then
-                        opaqueDoublePipeline
-                    else
-                        opaqueCullPipeline
+            let mutable depthAtt = WGPURenderPassDepthStencilAttachment ()
+            depthAtt.View <- msaaDepthView
+            depthAtt.DepthLoadOp <- WGPULoadOp_Clear
+            depthAtt.DepthStoreOp <- WGPUStoreOp_Discard
+            depthAtt.DepthClearValue <- 1.0f
 
-                if pipe <> lastPipeline then
-                    wgpuRenderPassEncoderSetPipeline (pass, pipe)
-                    lastPipeline <- pipe
+            let mutable rpDesc = WGPURenderPassDescriptor ()
+            rpDesc.Label <- WGPUStringView.Null
+            rpDesc.ColorAttachmentCount <- 1un
+            rpDesc.ColorAttachments <- addrOf &colorAtt
+            rpDesc.DepthStencilAttachment <- addrOf &depthAtt
 
-                wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, b.Mesh.VertexBuffer, 0uL, b.Mesh.VertexBytes)
-                wgpuRenderPassEncoderSetVertexBuffer (pass, 1u, b.InstanceBuffer, 0uL, b.ActiveBytes)
-                wgpuRenderPassEncoderSetIndexBuffer (pass, b.Mesh.IndexBuffer, WGPUIndexFormat_Uint32, 0uL, b.Mesh.IndexBytes)
-                wgpuRenderPassEncoderDrawIndexed (pass, b.Mesh.IndexCount, uint32 b.Count, 0u, 0, 0u)
-                drawCalls <- drawCalls + 1
-                totalInstances <- totalInstances + b.Count
-                totalTris <- totalTris + (b.Mesh.TriangleCount * b.Count)
+            let pass = wgpuCommandEncoderBeginRenderPass (enc, addrOf &rpDesc)
+            wgpuRenderPassEncoderEnd (pass)
+            wgpuRenderPassEncoderRelease (pass)
 
-        if linePipeline <> 0n && lineSpan.Length > 0 then
-            for i = 0 to lineSpan.Length - 1 do
-                let lb = lineSpan[i]
+            let mutable cmd = wgpuCommandEncoderFinish (enc, 0n)
+            wgpuCommandEncoderRelease (enc)
+            lastSubIdx <- wgpuQueueSubmitForIndex (queue, 1un, addrOf &cmd)
+            wgpuCommandBufferRelease (cmd)
+        else
+            let outerClear =
+                match clearColorOpt with
+                | ValueSome c -> c
+                | ValueNone ->
+                    passes[0].ClearColor
+                    |> ValueOption.defaultValue RgbaColor.darkBackdrop
 
-                if lb.VertexCount >= 2 then
-                    if lastPipeline <> linePipeline then
-                        wgpuRenderPassEncoderSetPipeline (pass, linePipeline)
-                        lastPipeline <- linePipeline
+            for k = 0 to passes.Length - 1 do
+                let scene = passes[k]
+                let vpOpt = resolveViewport curWidth curHeight scene.Viewport
+                let isFirst = (k = 0)
+                let isLast = (k = passes.Length - 1)
 
-                    wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, lb.VertexBuffer, 0uL, lb.ActiveBytes)
-                    wgpuRenderPassEncoderDraw (pass, uint32 lb.VertexCount, 1u, 0u, 0u)
-                    drawCalls <- drawCalls + 1
+                if isFirst || isLast || vpOpt.IsSome then
+                    let subClearOpt =
+                        match vpOpt with
+                        | ValueNone -> ValueNone
+                        | ValueSome _ when isFirst ->
+                            if
+                                clearColorOpt.IsSome
+                                && scene.ClearColor.IsSome
+                                && scene.Viewport.IsSome
+                            then
+                                scene.ClearColor
+                            else
+                                ValueNone
+                        | ValueSome _ -> scene.ClearColor
 
-        for i = 0 to batchSpan.Length - 1 do
-            let b = batchSpan[i]
+                    match vpOpt with
+                    | ValueSome vp ->
+                        let rig =
+                            match scene.Lighting with
+                            | ValueSome l -> l
+                            | ValueNone -> LightingRig.studioDefault
 
-            if
-                b.BlendMode = BlendMode.AlphaBlend
-                && b.Count > 0
-                && b.Mesh.IndexCount > 0u
-            then
-                let pipe =
-                    if b.DoubleSided then
-                        blendDoublePipeline
-                    else
-                        blendCullPipeline
+                        let clip =
+                            match scene.SectionPlane with
+                            | ValueSome s -> s
+                            | ValueNone -> SectionPlane.disabled
 
-                if pipe <> lastPipeline then
-                    wgpuRenderPassEncoderSetPipeline (pass, pipe)
-                    lastPipeline <- pipe
+                        writeSceneUniforms vp.Width vp.Height scene.Camera rig clip
 
-                wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, b.Mesh.VertexBuffer, 0uL, b.Mesh.VertexBytes)
-                wgpuRenderPassEncoderSetVertexBuffer (pass, 1u, b.InstanceBuffer, 0uL, b.ActiveBytes)
-                wgpuRenderPassEncoderSetIndexBuffer (pass, b.Mesh.IndexBuffer, WGPUIndexFormat_Uint32, 0uL, b.Mesh.IndexBytes)
-                wgpuRenderPassEncoderDrawIndexed (pass, b.Mesh.IndexCount, uint32 b.Count, 0u, 0, 0u)
-                drawCalls <- drawCalls + 1
-                totalInstances <- totalInstances + b.Count
-                totalTris <- totalTris + (b.Mesh.TriangleCount * b.Count)
+                        match subClearOpt with
+                        | ValueSome sc -> writeClearQuad sc
+                        | ValueNone -> ()
+                    | ValueNone -> ()
 
-        if discPipeline <> 0n && discSpan.Length > 0 then
-            for i = 0 to discSpan.Length - 1 do
-                let db = discSpan[i]
+                    let enc = wgpuDeviceCreateCommandEncoder (device, 0n)
+                    let mutable colorAtt = WGPURenderPassColorAttachment ()
+                    colorAtt.View <- msaaColorView
+                    colorAtt.DepthSlice <- WGPU_DEPTH_SLICE_UNDEFINED
+                    colorAtt.ResolveTarget <- if isLast then resolveTargetView else 0n
+                    colorAtt.LoadOp <- if isFirst then WGPULoadOp_Clear else WGPULoadOp_Load
+                    colorAtt.StoreOp <- WGPUStoreOp_Store
 
-                if db.Count > 0 then
-                    if lastPipeline <> discPipeline then
-                        wgpuRenderPassEncoderSetPipeline (pass, discPipeline)
-                        lastPipeline <- discPipeline
+                    if isFirst then
+                        let clearAlpha = float (Math.Clamp (outerClear.A, 0.0f, 1.0f))
+                        colorAtt.ClearValue.R <- float outerClear.R * clearAlpha
+                        colorAtt.ClearValue.G <- float outerClear.G * clearAlpha
+                        colorAtt.ClearValue.B <- float outerClear.B * clearAlpha
+                        colorAtt.ClearValue.A <- clearAlpha
 
-                    wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, db.InstanceBuffer, 0uL, db.ActiveBytes)
-                    wgpuRenderPassEncoderDraw (pass, 6u, uint32 db.Count, 0u, 0u)
-                    drawCalls <- drawCalls + 1
-                    totalInstances <- totalInstances + db.Count
-                    totalTris <- totalTris + (db.Count * 2)
+                    let mutable depthAtt = WGPURenderPassDepthStencilAttachment ()
+                    depthAtt.View <- msaaDepthView
+                    depthAtt.DepthLoadOp <- WGPULoadOp_Clear
+                    depthAtt.DepthStoreOp <- WGPUStoreOp_Discard
+                    depthAtt.DepthClearValue <- 1.0f
 
-        wgpuRenderPassEncoderEnd (pass)
-        wgpuRenderPassEncoderRelease (pass)
+                    let mutable rpDesc = WGPURenderPassDescriptor ()
+                    rpDesc.Label <- WGPUStringView.Null
+                    rpDesc.ColorAttachmentCount <- 1un
+                    rpDesc.ColorAttachments <- addrOf &colorAtt
+                    rpDesc.DepthStencilAttachment <- addrOf &depthAtt
 
-        let mutable cmd = wgpuCommandEncoderFinish (enc, 0n)
-        wgpuCommandEncoderRelease (enc)
-        let mutable subIdx = wgpuQueueSubmitForIndex (queue, 1un, addrOf &cmd)
-        wgpuCommandBufferRelease (cmd)
-        let _ = wgpuDevicePoll (device, WGPU_TRUE, addrOf &subIdx)
+                    let pass = wgpuCommandEncoderBeginRenderPass (enc, addrOf &rpDesc)
+
+                    match vpOpt with
+                    | ValueNone -> ()
+                    | ValueSome vp ->
+                        wgpuRenderPassEncoderSetViewport (pass, float32 vp.X, float32 vp.Y, float32 vp.Width, float32 vp.Height, 0.0f, 1.0f)
+                        wgpuRenderPassEncoderSetScissorRect (pass, uint32 vp.X, uint32 vp.Y, uint32 vp.Width, uint32 vp.Height)
+
+                        let mutable lastPipeline = 0n
+
+                        if subClearOpt.IsSome then
+                            wgpuRenderPassEncoderSetPipeline (pass, clearPipeline)
+                            wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, clearVertexBuffer, 0uL, uint64 (6 * sizeof<ClearVertex>))
+                            wgpuRenderPassEncoderDraw (pass, 6u, 1u, 0u, 0u)
+                            lastPipeline <- clearPipeline
+
+                        wgpuRenderPassEncoderSetBindGroup (pass, 0u, bindGroup, 0un, 0n)
+
+                        let batchSpan = scene.Batches.Span
+                        let lineSpan = scene.LineBatches.Span
+                        let discSpan = scene.DiscBatches.Span
+
+                        // 1. Opaque meshes
+                        encodeInstanceBatches
+                            pass
+                            batchSpan
+                            BlendMode.Opaque
+                            false
+                            opaqueCullPipeline
+                            opaqueDoublePipeline
+                            &lastPipeline
+                            &drawCalls
+                            &totalInstances
+                            &totalTris
+
+                        // 2. AlphaBlend backdrop batches drawn before hairlines
+                        encodeInstanceBatches
+                            pass
+                            batchSpan
+                            BlendMode.AlphaBlend
+                            true
+                            blendCullPipeline
+                            blendDoublePipeline
+                            &lastPipeline
+                            &drawCalls
+                            &totalInstances
+                            &totalTris
+
+                        // 3. 3D hairlines
+                        if linePipeline <> 0n && lineSpan.Length > 0 then
+                            for i = 0 to lineSpan.Length - 1 do
+                                let lb = lineSpan[i]
+
+                                if lb.VertexCount >= 2 then
+                                    if lastPipeline <> linePipeline then
+                                        wgpuRenderPassEncoderSetPipeline (pass, linePipeline)
+                                        lastPipeline <- linePipeline
+
+                                    wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, lb.VertexBuffer, 0uL, lb.ActiveBytes)
+                                    wgpuRenderPassEncoderDraw (pass, uint32 lb.VertexCount, 1u, 0u, 0u)
+                                    drawCalls <- drawCalls + 1
+
+                        // 4. Standard AlphaBlend batches drawn after hairlines
+                        encodeInstanceBatches
+                            pass
+                            batchSpan
+                            BlendMode.AlphaBlend
+                            false
+                            blendCullPipeline
+                            blendDoublePipeline
+                            &lastPipeline
+                            &drawCalls
+                            &totalInstances
+                            &totalTris
+
+                        // 5. Camera-facing SDF discs
+                        if discPipeline <> 0n && discSpan.Length > 0 then
+                            for i = 0 to discSpan.Length - 1 do
+                                let db = discSpan[i]
+
+                                if db.Count > 0 then
+                                    if lastPipeline <> discPipeline then
+                                        wgpuRenderPassEncoderSetPipeline (pass, discPipeline)
+                                        lastPipeline <- discPipeline
+
+                                    wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, db.InstanceBuffer, 0uL, db.ActiveBytes)
+                                    wgpuRenderPassEncoderDraw (pass, 6u, uint32 db.Count, 0u, 0u)
+                                    drawCalls <- drawCalls + 1
+                                    totalInstances <- totalInstances + db.Count
+                                    totalTris <- totalTris + (db.Count * 2)
+
+                    wgpuRenderPassEncoderEnd (pass)
+                    wgpuRenderPassEncoderRelease (pass)
+
+                    let mutable cmd = wgpuCommandEncoderFinish (enc, 0n)
+                    wgpuCommandEncoderRelease (enc)
+                    lastSubIdx <- wgpuQueueSubmitForIndex (queue, 1un, addrOf &cmd)
+                    wgpuCommandBufferRelease (cmd)
+
+        let _ = wgpuDevicePoll (device, WGPU_TRUE, addrOf &lastSubIdx)
         let t1 = Stopwatch.GetTimestamp ()
         struct (t0, t1, drawCalls, totalInstances, totalTris)
+
+    let submitScenePass (scene: ScenePass) (resolveTargetView: nativeint) : struct (int64 * int64 * int * int * int) =
+        let mutable s = scene
+        submitScenePasses (MemoryMarshal.CreateReadOnlySpan (&s, 1)) ValueNone resolveTargetView
 
     let stageAndCopyResolveToSpan (destination: Span<byte>) =
         let requiredBytes = curWidth * curHeight * 4
@@ -1394,6 +1693,7 @@ type WgpuContext
                 match sectionPlane with
                 | Some s -> ValueSome s
                 | None -> ValueNone
+            Viewport = ValueNone
             Batches = batchMem
             LineBatches = lineMem
             DiscBatches = discMem
@@ -1445,8 +1745,18 @@ type WgpuContext
         new MeshHandle (device, queue, mesh)
 
     /// <summary>Creates a dynamic hardware-instanced draw batch bound to `mesh`.</summary>
-    member _.CreateBatch(mesh: MeshHandle, ?blendMode: BlendMode, ?doubleSided: bool) : InstanceBatch =
-        new InstanceBatch (device, queue, mesh, defaultArg blendMode BlendMode.Opaque, defaultArg doubleSided false)
+    member _.CreateBatch(mesh: MeshHandle, ?blendMode: BlendMode, ?doubleSided: bool, ?drawBeforeLines: bool) : InstanceBatch =
+        new InstanceBatch (device, queue, mesh, defaultArg blendMode BlendMode.Opaque, defaultArg doubleSided false, defaultArg drawBeforeLines false)
+
+    /// <summary>Creates a hardware-instanced batch bound to `mesh` and populates it with one initial instance.</summary>
+    member this.CreateSingleBatch
+        (mesh: MeshHandle, ?blendMode: BlendMode, ?doubleSided: bool, ?drawBeforeLines: bool, ?instance: Instance3D)
+        : InstanceBatch =
+        let batch =
+            this.CreateBatch (mesh, ?blendMode = blendMode, ?doubleSided = doubleSided, ?drawBeforeLines = drawBeforeLines)
+
+        batch.SetSingle (defaultArg instance (Instance3D.identity RgbaColor.white 0.30f 0u InstanceFlags.None))
+        batch
 
     /// <summary>Creates a dynamic 4x-MSAA 3D hairline batch.</summary>
     member _.CreateLineBatch() : LineBatch =
@@ -1537,6 +1847,32 @@ type WgpuContext
             TriangleCount = totalTris
         }
 
+    /// <summary>Executes multiple `ScenePass` items sequentially in GPU VRAM without staging or mapping a CPU readback buffer.</summary>
+    member internal _.RenderGpuPasses(passes: ReadOnlySpan<ScenePass>, ?clearColor: RgbaColor, ?resolveViewOverride: nativeint) : FrameMetrics =
+        if disposed then
+            raise (ObjectDisposedException (nameof WgpuContext))
+
+        let targetView = defaultArg resolveViewOverride resolveColorView
+
+        let clearOpt =
+            match clearColor with
+            | Some c -> ValueSome c
+            | None -> ValueNone
+
+        let struct (t0, t1, drawCalls, totalInstances, totalTris) =
+            submitScenePasses passes clearOpt targetView
+
+        framesDelivered <- framesDelivered + 1
+        let freq = float Stopwatch.Frequency
+
+        {
+            GpuRenderMs = float (t1 - t0) * 1000.0 / freq
+            ReadbackMs = 0.0
+            DrawCalls = drawCalls
+            InstanceCount = totalInstances
+            TriangleCount = totalTris
+        }
+
     /// <summary>Executes the 4x-MSAA scene pass purely in GPU VRAM without staging or mapping a CPU readback buffer.</summary>
     member internal this.RenderGpuOnly
         (
@@ -1577,10 +1913,48 @@ type WgpuContext
             TriangleCount = totalTris
         }
 
+    /// <summary>Renders `passes` sequentially and copies unpremultiplied RGBA8 pixels directly into caller-supplied `destination`.</summary>
+    member _.RenderPassesInto(passes: ReadOnlySpan<ScenePass>, destination: Span<byte>, ?clearColor: RgbaColor) : FrameMetrics =
+        if disposed then
+            raise (ObjectDisposedException (nameof WgpuContext))
+
+        let clearOpt =
+            match clearColor with
+            | Some c -> ValueSome c
+            | None -> ValueNone
+
+        let struct (t0, t1, drawCalls, totalInstances, totalTris) =
+            submitScenePasses passes clearOpt resolveColorView
+
+        stageAndCopyResolveToSpan destination
+        framesDelivered <- framesDelivered + 1
+        let t2 = Stopwatch.GetTimestamp ()
+        let freq = float Stopwatch.Frequency
+
+        {
+            GpuRenderMs = float (t1 - t0) * 1000.0 / freq
+            ReadbackMs = float (t2 - t1) * 1000.0 / freq
+            DrawCalls = drawCalls
+            InstanceCount = totalInstances
+            TriangleCount = totalTris
+        }
+
     /// <summary>Renders a zero-allocation `ScenePass` and updates `RgbaPixels` on the CPU.</summary>
     member this.Render(pass: ScenePass) : FrameMetrics =
         let buf = ensureRgbaPixels ()
         this.RenderInto (pass, Span<byte>(buf))
+
+    /// <summary>Renders multiple `ScenePass` items sequentially into the framebuffer and updates `RgbaPixels` on the CPU.</summary>
+    member this.RenderPasses(passes: ReadOnlySpan<ScenePass>, ?clearColor: RgbaColor) : FrameMetrics =
+        let buf = ensureRgbaPixels ()
+        this.RenderPassesInto (passes, Span<byte>(buf), ?clearColor = clearColor)
+
+    /// <summary>Renders an array of `ScenePass` items sequentially into the framebuffer and updates `RgbaPixels` on the CPU.</summary>
+    member this.RenderPasses(passes: ScenePass array, ?clearColor: RgbaColor) : FrameMetrics =
+        if isNull passes then
+            nullArg (nameof passes)
+
+        this.RenderPasses (ReadOnlySpan<ScenePass>(passes), ?clearColor = clearColor)
 
     /// <summary>Renders `camera` and `batches` with optional scene settings and updates `RgbaPixels` on the CPU.</summary>
     member this.Render
@@ -1606,6 +1980,175 @@ type WgpuContext
         if disposed then
             raise (ObjectDisposedException (nameof WgpuContext))
 
+        let outsideViewport =
+            match scene.Viewport with
+            | ValueSome vp -> not (vp.Contains (px, py))
+            | ValueNone -> false
+
+        if
+            px < 0
+            || px >= curWidth
+            || py < 0
+            || py >= curHeight
+            || outsideViewport
+        then
+            ValueNone
+        else
+            match resolveViewport curWidth curHeight scene.Viewport with
+            | ValueNone -> ValueNone
+            | ValueSome activeVp ->
+                let clip =
+                    match scene.SectionPlane with
+                    | ValueSome s -> s
+                    | ValueNone -> SectionPlane.disabled
+
+                writeSceneUniforms activeVp.Width activeVp.Height scene.Camera LightingRig.studioDefault clip
+
+                let enc = wgpuDeviceCreateCommandEncoder (device, 0n)
+                let mutable colorAtt = WGPURenderPassColorAttachment ()
+                colorAtt.View <- pickColorView
+                colorAtt.DepthSlice <- WGPU_DEPTH_SLICE_UNDEFINED
+                colorAtt.LoadOp <- WGPULoadOp_Clear
+                colorAtt.StoreOp <- WGPUStoreOp_Store
+
+                let mutable depthAtt = WGPURenderPassDepthStencilAttachment ()
+                depthAtt.View <- pickDepthView
+                depthAtt.DepthLoadOp <- WGPULoadOp_Clear
+                depthAtt.DepthStoreOp <- WGPUStoreOp_Discard
+                depthAtt.DepthClearValue <- 1.0f
+
+                let mutable rpDesc = WGPURenderPassDescriptor ()
+                rpDesc.Label <- WGPUStringView.Null
+                rpDesc.ColorAttachmentCount <- 1un
+                rpDesc.ColorAttachments <- addrOf &colorAtt
+                rpDesc.DepthStencilAttachment <- addrOf &depthAtt
+
+                let pass = wgpuCommandEncoderBeginRenderPass (enc, addrOf &rpDesc)
+
+                wgpuRenderPassEncoderSetViewport (
+                    pass,
+                    float32 activeVp.X,
+                    float32 activeVp.Y,
+                    float32 activeVp.Width,
+                    float32 activeVp.Height,
+                    0.0f,
+                    1.0f
+                )
+
+                wgpuRenderPassEncoderSetScissorRect (pass, uint32 px, uint32 py, 1u, 1u)
+                wgpuRenderPassEncoderSetBindGroup (pass, 0u, bindGroup, 0un, 0n)
+
+                let mutable lastPipe = 0n
+                let batchSpan = scene.Batches.Span
+
+                for i = 0 to batchSpan.Length - 1 do
+                    let b = batchSpan[i]
+
+                    if b.Count > 0 && b.Mesh.IndexCount > 0u then
+                        let pipe =
+                            if b.DoubleSided then
+                                pickDoublePipeline
+                            else
+                                pickCullPipeline
+
+                        if pipe <> lastPipe then
+                            wgpuRenderPassEncoderSetPipeline (pass, pipe)
+                            lastPipe <- pipe
+
+                        wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, b.Mesh.VertexBuffer, 0uL, b.Mesh.VertexBytes)
+                        wgpuRenderPassEncoderSetVertexBuffer (pass, 1u, b.InstanceBuffer, 0uL, b.ActiveBytes)
+                        wgpuRenderPassEncoderSetIndexBuffer (pass, b.Mesh.IndexBuffer, WGPUIndexFormat_Uint32, 0uL, b.Mesh.IndexBytes)
+                        wgpuRenderPassEncoderDrawIndexed (pass, b.Mesh.IndexCount, uint32 b.Count, 0u, 0, 0u)
+
+                let discSpan = scene.DiscBatches.Span
+
+                if discPickPipeline <> 0n && discSpan.Length > 0 then
+                    for i = 0 to discSpan.Length - 1 do
+                        let db = discSpan[i]
+
+                        if db.Count > 0 then
+                            if lastPipe <> discPickPipeline then
+                                wgpuRenderPassEncoderSetPipeline (pass, discPickPipeline)
+                                lastPipe <- discPickPipeline
+
+                            wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, db.InstanceBuffer, 0uL, db.ActiveBytes)
+                            wgpuRenderPassEncoderDraw (pass, 6u, uint32 db.Count, 0u, 0u)
+
+                wgpuRenderPassEncoderEnd (pass)
+                wgpuRenderPassEncoderRelease (pass)
+
+                let mutable srcTex = WGPUTexelCopyTextureInfo ()
+                srcTex.Texture <- pickColorTex
+                srcTex.MipLevel <- 0u
+                srcTex.Origin.X <- uint32 px
+                srcTex.Origin.Y <- uint32 py
+                srcTex.Origin.Z <- 0u
+                srcTex.Aspect <- WGPUTextureAspect_All
+
+                let mutable dstBuf = WGPUTexelCopyBufferInfo ()
+                dstBuf.Buffer <- pickReadbackBuffer
+                dstBuf.Layout.Offset <- 0uL
+                dstBuf.Layout.BytesPerRow <- 256u
+                dstBuf.Layout.RowsPerImage <- 1u
+
+                let mutable extent = WGPUExtent3D ()
+                extent.Width <- 1u
+                extent.Height <- 1u
+                extent.DepthOrArrayLayers <- 1u
+
+                wgpuCommandEncoderCopyTextureToBuffer (enc, addrOf &srcTex, addrOf &dstBuf, addrOf &extent)
+                let mutable cmd = wgpuCommandEncoderFinish (enc, 0n)
+                wgpuCommandEncoderRelease (enc)
+                wgpuQueueSubmit (queue, 1un, addrOf &cmd)
+                wgpuCommandBufferRelease (cmd)
+
+                lock callbackLock (fun () ->
+                    WgpuCallbacks.lastMapDone <- false
+                    WgpuCallbacks.lastMapStatus <- 0u
+                    let mutable mapCb = WGPUBufferMapCallbackInfo ()
+                    mapCb.Mode <- WGPUCallbackMode_AllowSpontaneous
+                    mapCb.Callback <- WgpuCallbacks.mapPtr
+                    let _ = wgpuBufferMapAsync (pickReadbackBuffer, WGPUMapMode_Read, 0un, 16un, mapCb)
+                    let _ = wgpuDevicePoll (device, WGPU_TRUE, 0n)
+
+                    if
+                        not WgpuCallbacks.lastMapDone
+                        || WgpuCallbacks.lastMapStatus
+                           <> WGPUMapAsyncStatus_Success
+                    then
+                        failwith $"wgpuBufferMapAsync (Pick) failed with status {WgpuCallbacks.lastMapStatus}.")
+
+                let ptr = wgpuBufferGetConstMappedRange (pickReadbackBuffer, 0un, 16un)
+
+                try
+                    let uPtr = NativePtr.ofNativeInt<uint32> ptr
+                    let ux = NativePtr.get uPtr 0
+                    let uy = NativePtr.get uPtr 1
+                    let uz = NativePtr.get uPtr 2
+                    let pickId = NativePtr.get uPtr 3
+
+                    if pickId = 0u then
+                        ValueNone
+                    else
+                        let wx = BitConverter.UInt32BitsToSingle ux
+                        let wy = BitConverter.UInt32BitsToSingle uy
+                        let wz = BitConverter.UInt32BitsToSingle uz
+
+                        ValueSome
+                            {
+                                PickId = pickId
+                                WorldPosition = Vector3 (wx, wy, wz)
+                            }
+                finally
+                    wgpuBufferUnmap (pickReadbackBuffer)
+
+    /// <summary>
+    /// Picks at pixel `(px, py)` against the topmost `ScenePass` in `passes` whose viewport contains `(px, py)`.
+    /// </summary>
+    member this.PickPasses(px: int, py: int, passes: ReadOnlySpan<ScenePass>) : PickHit voption =
+        if disposed then
+            raise (ObjectDisposedException (nameof WgpuContext))
+
         if
             px < 0
             || px >= curWidth
@@ -1614,139 +2157,34 @@ type WgpuContext
         then
             ValueNone
         else
-            let clip =
-                match scene.SectionPlane with
-                | ValueSome s -> s
-                | ValueNone -> SectionPlane.disabled
+            let mutable i = passes.Length - 1
+            let mutable result = ValueNone
+            let mutable handled = false
 
-            writeSceneUniforms scene.Camera LightingRig.studioDefault clip
+            while i >= 0 && not handled do
+                let p = passes[i]
 
-            let enc = wgpuDeviceCreateCommandEncoder (device, 0n)
-            let mutable colorAtt = WGPURenderPassColorAttachment ()
-            colorAtt.View <- pickColorView
-            colorAtt.DepthSlice <- WGPU_DEPTH_SLICE_UNDEFINED
-            colorAtt.LoadOp <- WGPULoadOp_Clear
-            colorAtt.StoreOp <- WGPUStoreOp_Store
+                let contains =
+                    match p.Viewport with
+                    | ValueSome vp -> vp.Contains (px, py)
+                    | ValueNone -> true
 
-            let mutable depthAtt = WGPURenderPassDepthStencilAttachment ()
-            depthAtt.View <- pickDepthView
-            depthAtt.DepthLoadOp <- WGPULoadOp_Clear
-            depthAtt.DepthStoreOp <- WGPUStoreOp_Discard
-            depthAtt.DepthClearValue <- 1.0f
-
-            let mutable rpDesc = WGPURenderPassDescriptor ()
-            rpDesc.Label <- WGPUStringView.Null
-            rpDesc.ColorAttachmentCount <- 1un
-            rpDesc.ColorAttachments <- addrOf &colorAtt
-            rpDesc.DepthStencilAttachment <- addrOf &depthAtt
-
-            let pass = wgpuCommandEncoderBeginRenderPass (enc, addrOf &rpDesc)
-            wgpuRenderPassEncoderSetScissorRect (pass, uint32 px, uint32 py, 1u, 1u)
-            wgpuRenderPassEncoderSetBindGroup (pass, 0u, bindGroup, 0un, 0n)
-
-            let mutable lastPipe = 0n
-            let batchSpan = scene.Batches.Span
-
-            for i = 0 to batchSpan.Length - 1 do
-                let b = batchSpan[i]
-
-                if b.Count > 0 && b.Mesh.IndexCount > 0u then
-                    let pipe =
-                        if b.DoubleSided then
-                            pickDoublePipeline
-                        else
-                            pickCullPipeline
-
-                    if pipe <> lastPipe then
-                        wgpuRenderPassEncoderSetPipeline (pass, pipe)
-                        lastPipe <- pipe
-
-                    wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, b.Mesh.VertexBuffer, 0uL, b.Mesh.VertexBytes)
-                    wgpuRenderPassEncoderSetVertexBuffer (pass, 1u, b.InstanceBuffer, 0uL, b.ActiveBytes)
-                    wgpuRenderPassEncoderSetIndexBuffer (pass, b.Mesh.IndexBuffer, WGPUIndexFormat_Uint32, 0uL, b.Mesh.IndexBytes)
-                    wgpuRenderPassEncoderDrawIndexed (pass, b.Mesh.IndexCount, uint32 b.Count, 0u, 0, 0u)
-
-            let discSpan = scene.DiscBatches.Span
-
-            if discPickPipeline <> 0n && discSpan.Length > 0 then
-                for i = 0 to discSpan.Length - 1 do
-                    let db = discSpan[i]
-
-                    if db.Count > 0 then
-                        if lastPipe <> discPickPipeline then
-                            wgpuRenderPassEncoderSetPipeline (pass, discPickPipeline)
-                            lastPipe <- discPickPipeline
-
-                        wgpuRenderPassEncoderSetVertexBuffer (pass, 0u, db.InstanceBuffer, 0uL, db.ActiveBytes)
-                        wgpuRenderPassEncoderDraw (pass, 6u, uint32 db.Count, 0u, 0u)
-
-            wgpuRenderPassEncoderEnd (pass)
-            wgpuRenderPassEncoderRelease (pass)
-
-            let mutable srcTex = WGPUTexelCopyTextureInfo ()
-            srcTex.Texture <- pickColorTex
-            srcTex.MipLevel <- 0u
-            srcTex.Origin.X <- uint32 px
-            srcTex.Origin.Y <- uint32 py
-            srcTex.Origin.Z <- 0u
-            srcTex.Aspect <- WGPUTextureAspect_All
-
-            let mutable dstBuf = WGPUTexelCopyBufferInfo ()
-            dstBuf.Buffer <- pickReadbackBuffer
-            dstBuf.Layout.Offset <- 0uL
-            dstBuf.Layout.BytesPerRow <- 256u
-            dstBuf.Layout.RowsPerImage <- 1u
-
-            let mutable extent = WGPUExtent3D ()
-            extent.Width <- 1u
-            extent.Height <- 1u
-            extent.DepthOrArrayLayers <- 1u
-
-            wgpuCommandEncoderCopyTextureToBuffer (enc, addrOf &srcTex, addrOf &dstBuf, addrOf &extent)
-            let mutable cmd = wgpuCommandEncoderFinish (enc, 0n)
-            wgpuCommandEncoderRelease (enc)
-            wgpuQueueSubmit (queue, 1un, addrOf &cmd)
-            wgpuCommandBufferRelease (cmd)
-
-            lock callbackLock (fun () ->
-                WgpuCallbacks.lastMapDone <- false
-                WgpuCallbacks.lastMapStatus <- 0u
-                let mutable mapCb = WGPUBufferMapCallbackInfo ()
-                mapCb.Mode <- WGPUCallbackMode_AllowSpontaneous
-                mapCb.Callback <- WgpuCallbacks.mapPtr
-                let _ = wgpuBufferMapAsync (pickReadbackBuffer, WGPUMapMode_Read, 0un, 16un, mapCb)
-                let _ = wgpuDevicePoll (device, WGPU_TRUE, 0n)
-
-                if
-                    not WgpuCallbacks.lastMapDone
-                    || WgpuCallbacks.lastMapStatus
-                       <> WGPUMapAsyncStatus_Success
-                then
-                    failwith $"wgpuBufferMapAsync (Pick) failed with status {WgpuCallbacks.lastMapStatus}.")
-
-            let ptr = wgpuBufferGetConstMappedRange (pickReadbackBuffer, 0un, 16un)
-
-            try
-                let uPtr = NativePtr.ofNativeInt<uint32> ptr
-                let ux = NativePtr.get uPtr 0
-                let uy = NativePtr.get uPtr 1
-                let uz = NativePtr.get uPtr 2
-                let pickId = NativePtr.get uPtr 3
-
-                if pickId = 0u then
-                    ValueNone
+                if contains then
+                    result <- this.Pick (px, py, p)
+                    handled <- true
                 else
-                    let wx = BitConverter.UInt32BitsToSingle ux
-                    let wy = BitConverter.UInt32BitsToSingle uy
-                    let wz = BitConverter.UInt32BitsToSingle uz
+                    i <- i - 1
 
-                    ValueSome
-                        {
-                            PickId = pickId
-                            WorldPosition = Vector3 (wx, wy, wz)
-                        }
-            finally
-                wgpuBufferUnmap (pickReadbackBuffer)
+            result
+
+    /// <summary>
+    /// Picks at pixel `(px, py)` against the topmost `ScenePass` in `passes` whose viewport contains `(px, py)`.
+    /// </summary>
+    member this.PickPasses(px: int, py: int, passes: ScenePass array) : PickHit voption =
+        if isNull passes then
+            nullArg (nameof passes)
+
+        this.PickPasses (px, py, ReadOnlySpan<ScenePass>(passes))
 
     /// <summary>Executes a 1x1-scissor hardware GPU picking pass at pixel `(px, py)`.</summary>
     member this.PickAtPixel

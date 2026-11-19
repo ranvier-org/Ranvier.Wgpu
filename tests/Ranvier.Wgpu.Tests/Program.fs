@@ -1346,6 +1346,655 @@ let wgpuContextTests =
                             "clipped line with ignoreSectionPlane=true (Vector4) renders cyan")
 
                 expectNoWgpuError printed "no WebGPU error during LineVertex3D section-exemption test"
+
+            testCase "fs_pick discards alpha-zero mesh occluders so opaque targets behind them are picked"
+            <| fun () ->
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        use ctx = new WgpuContext (initialWidth = 64, initialHeight = 64)
+                        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+                        use boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+                        use opaqueMeshBatch = ctx.CreateBatch boxMesh
+                        use invisibleMeshBatch = ctx.CreateBatch (boxMesh, BlendMode.AlphaBlend, true)
+
+                        opaqueMeshBatch.SetSingle (
+                            Instance3D.trs
+                                Vector3.Zero
+                                0.0f
+                                (Vector3 (1.5f, 1.5f, 0.2f))
+                                (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f))
+                                0.5f
+                                42u
+                                InstanceFlags.Unlit
+                        )
+
+                        invisibleMeshBatch.SetSingle (
+                            Instance3D.trs
+                                (Vector3 (0.0f, 0.0f, 1.0f))
+                                0.0f
+                                (Vector3 (1.5f, 1.5f, 0.2f))
+                                (RgbaColor (1.0f, 0.0f, 0.0f, 0.0f))
+                                0.5f
+                                99u
+                                InstanceFlags.Unlit
+                        )
+
+                        let meshPickPass =
+                            ScenePass.create cam
+                            |> ScenePass.withBatches [| opaqueMeshBatch; invisibleMeshBatch |]
+
+                        Expect.equal
+                            (meshPickPass
+                             |> WgpuContext.pick 32 32 ctx
+                             |> ValueOption.map _.PickId)
+                            (ValueSome 42u)
+                            "fs_pick skips invisible alpha-zero mesh occluder and picks opaque target 42u")
+
+                expectNoWgpuError printed "no WebGPU error during fs_pick alpha-zero discard test"
+
+            testCase "fs_disc_pick discards alpha-zero unselected disc occluders so opaque targets behind them are picked"
+            <| fun () ->
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        use ctx = new WgpuContext (initialWidth = 64, initialHeight = 64)
+                        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+                        use discs = ctx.CreateDiscBatch ()
+
+                        discs.UpdateDiscs
+                            [|
+                                DiscInstance3D.create
+                                    (Vector3 (0.0f, 0.0f, 1.0f))
+                                    14.0f
+                                    (RgbaColor (1.0f, 0.0f, 0.0f, 0.0f))
+                                    0.0f
+                                    0.0f
+                                    0.0f
+                                    0.0f
+                                    98u
+                                    InstanceFlags.None
+                                DiscInstance3D.create
+                                    Vector3.Zero
+                                    14.0f
+                                    (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f))
+                                    0.0f
+                                    0.0f
+                                    0.0f
+                                    0.0f
+                                    42u
+                                    InstanceFlags.None
+                            |]
+
+                        let discPickPass =
+                            ScenePass.create cam
+                            |> ScenePass.withDiscs [| discs |]
+
+                        Expect.equal
+                            (discPickPass
+                             |> WgpuContext.pick 32 32 ctx
+                             |> ValueOption.map _.PickId)
+                            (ValueSome 42u)
+                            "fs_disc_pick skips invisible alpha-zero disc occluder and picks opaque disc 42u")
+
+                expectNoWgpuError printed "no WebGPU error during fs_disc_pick alpha-zero discard test"
+
+            testCase "InstanceFlags.ExactColor bypasses Reinhard tone-mapping and gamma curve while Unlit preserves them"
+            <| fun () ->
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        Expect.equal InstanceFlags.None 0u "InstanceFlags.None stays 0u"
+                        Expect.equal InstanceFlags.Unlit 1u "InstanceFlags.Unlit stays 1u"
+                        Expect.equal InstanceFlags.Selected 2u "InstanceFlags.Selected stays 2u"
+                        Expect.equal InstanceFlags.IgnoreSectionPlane 4u "InstanceFlags.IgnoreSectionPlane stays 4u"
+                        Expect.equal InstanceFlags.ExactColor 8u "InstanceFlags.ExactColor is 8u"
+                        Expect.equal InstanceFlags.UseColorLut 16u "InstanceFlags.UseColorLut is 16u"
+
+                        use ctx = new WgpuContext (initialWidth = 64, initialHeight = 64)
+                        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+                        use boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+                        use batch = ctx.CreateBatch boxMesh
+
+                        let pureGreen = RgbaColor (0.0f, 1.0f, 0.0f, 1.0f)
+
+                        batch.SetSingle (
+                            Instance3D.trs
+                                Vector3.Zero
+                                0.0f
+                                (Vector3 (2.0f, 2.0f, 0.2f))
+                                pureGreen
+                                0.5f
+                                1u
+                                (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+                        )
+
+                        let pass =
+                            ScenePass.create cam
+                            |> ScenePass.withClear RgbaColor.black
+                            |> ScenePass.withBatches [| batch |]
+
+                        pass |> WgpuContext.render ctx |> ignore
+                        let struct (er, eg, eb, ea) = pixelAt ctx 32 32
+                        Expect.equal er 0uy "ExactColor pure green R = 0"
+                        Expect.isGreaterThanOrEqual eg 254uy "ExactColor pure green G >= 254"
+                        Expect.equal eb 0uy "ExactColor pure green B = 0"
+                        Expect.equal ea 255uy "ExactColor pure green A = 255"
+
+                        // Mid-tone exact color check
+                        let mid = RgbaColor (0.2f, 0.4f, 0.8f, 1.0f)
+
+                        batch.SetSingle (
+                            Instance3D.trs
+                                Vector3.Zero
+                                0.0f
+                                (Vector3 (2.0f, 2.0f, 0.2f))
+                                mid
+                                0.5f
+                                1u
+                                (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+                        )
+
+                        pass |> WgpuContext.render ctx |> ignore
+                        let struct (mr, mg, mb, ma) = pixelAt ctx 32 32
+                        Expect.isLessThanOrEqual (abs (int mr - 51)) 1 "ExactColor mid R ~ 51"
+                        Expect.isLessThanOrEqual (abs (int mg - 102)) 1 "ExactColor mid G ~ 102"
+                        Expect.isLessThanOrEqual (abs (int mb - 204)) 1 "ExactColor mid B ~ 204"
+                        Expect.equal ma 255uy "ExactColor mid A = 255"
+
+                        // Unlit alone keeps tone mapping (~220)
+                        batch.SetSingle (Instance3D.trs Vector3.Zero 0.0f (Vector3 (2.0f, 2.0f, 0.2f)) pureGreen 0.5f 1u InstanceFlags.Unlit)
+
+                        pass |> WgpuContext.render ctx |> ignore
+                        let struct (ur, ug, ub, ua) = pixelAt ctx 32 32
+                        Expect.equal ur 0uy "Unlit pure green R = 0"
+                        Expect.isGreaterThanOrEqual ug 218uy "Unlit tone-mapped G >= 218"
+                        Expect.isLessThanOrEqual ug 222uy "Unlit tone-mapped G <= 222"
+                        Expect.equal ub 0uy "Unlit pure green B = 0"
+                        Expect.equal ua 255uy "Unlit pure green A = 255")
+
+                expectNoWgpuError printed "no WebGPU error during ExactColor test"
+
+            testCase "DrawBeforeLines renders AlphaBlend backdrop batches before LineBatch hairlines"
+            <| fun () ->
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        use ctx = new WgpuContext (initialWidth = 64, initialHeight = 64)
+                        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+                        use boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+                        use defaultBatch = ctx.CreateBatch boxMesh
+
+                        use beforeBatch =
+                            ctx.CreateBatch (boxMesh, BlendMode.AlphaBlend, true, drawBeforeLines = true)
+
+                        use afterBatch =
+                            ctx.CreateBatch (boxMesh, BlendMode.AlphaBlend, true, drawBeforeLines = false)
+
+                        Expect.isFalse defaultBatch.DrawBeforeLines "default CreateBatch has DrawBeforeLines = false"
+                        Expect.isTrue beforeBatch.DrawBeforeLines "beforeBatch has DrawBeforeLines = true"
+                        Expect.isFalse afterBatch.DrawBeforeLines "afterBatch has DrawBeforeLines = false"
+
+                        let panelInst =
+                            Instance3D.trs
+                                Vector3.Zero
+                                0.0f
+                                (Vector3 (2.8f, 2.8f, 0.1f))
+                                (RgbaColor (0.0f, 0.0f, 0.4f, 0.55f))
+                                0.5f
+                                1u
+                                (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+
+                        beforeBatch.SetSingle panelInst
+                        afterBatch.SetSingle panelInst
+
+                        use lines = ctx.CreateLineBatch ()
+
+                        lines.UpdateVertices
+                            [|
+                                LineVertex3D (Vector3 (-1.4f, 0.0f, 0.0f), RgbaColor.white)
+                                LineVertex3D (Vector3 (1.4f, 0.0f, 0.0f), RgbaColor.white)
+                            |]
+
+                        let brightestRedNearCenter () =
+                            let mutable best = 0uy
+
+                            for y = 28 to 36 do
+                                let struct (r, _, _, _) = pixelAt ctx 32 y
+
+                                if r > best then
+                                    best <- r
+
+                            best
+
+                        ScenePass.create cam
+                        |> ScenePass.withClear RgbaColor.black
+                        |> ScenePass.withBatches [| beforeBatch |]
+                        |> ScenePass.withLines [| lines |]
+                        |> WgpuContext.render ctx
+                        |> ignore
+
+                        let redWithBefore = brightestRedNearCenter ()
+
+                        ScenePass.create cam
+                        |> ScenePass.withClear RgbaColor.black
+                        |> ScenePass.withBatches [| afterBatch |]
+                        |> ScenePass.withLines [| lines |]
+                        |> WgpuContext.render ctx
+                        |> ignore
+
+                        let redWithAfter = brightestRedNearCenter ()
+
+                        Expect.isGreaterThan redWithBefore 100uy "white line drawn after backdrop stays bright"
+                        Expect.isLessThan redWithAfter 80uy "translucent panel drawn after line dims the white line"
+                        Expect.isGreaterThan redWithBefore redWithAfter "drawBeforeLines = true yields brighter line pixels than false")
+
+                expectNoWgpuError printed "no WebGPU error during DrawBeforeLines test"
+
+            testCase "CreateSingleBatch creates a single-instance batch with default or explicit Instance3D"
+            <| fun () ->
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        use ctx = new WgpuContext (initialWidth = 64, initialHeight = 64)
+                        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+                        use boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+                        use defaultSingle = ctx.CreateSingleBatch boxMesh
+                        Expect.equal defaultSingle.Count 1 "default CreateSingleBatch has Count = 1"
+
+                        let customInst =
+                            Instance3D.trs
+                                Vector3.Zero
+                                0.0f
+                                (Vector3 (2.0f, 2.0f, 0.2f))
+                                (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f))
+                                0.3f
+                                77u
+                                (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+
+                        use customSingle =
+                            ctx.CreateSingleBatch (
+                                boxMesh,
+                                blendMode = BlendMode.Opaque,
+                                doubleSided = false,
+                                drawBeforeLines = false,
+                                instance = customInst
+                            )
+
+                        Expect.equal customSingle.Count 1 "custom CreateSingleBatch has Count = 1"
+
+                        let pass =
+                            ScenePass.create cam
+                            |> ScenePass.withClear RgbaColor.black
+                            |> ScenePass.withBatches [| customSingle |]
+
+                        pass |> WgpuContext.render ctx |> ignore
+                        let struct (r, g, b, a) = pixelAt ctx 32 32
+                        Expect.equal r 0uy "customSingle center R = 0"
+                        Expect.isGreaterThanOrEqual g 254uy "customSingle center G >= 254"
+                        Expect.equal b 0uy "customSingle center B = 0"
+                        Expect.equal a 255uy "customSingle center A = 255"
+
+                        Expect.equal
+                            (pass
+                             |> WgpuContext.pick 32 32 ctx
+                             |> ValueOption.map _.PickId)
+                            (ValueSome 77u)
+                            "customSingle picks PickId 77u")
+
+                expectNoWgpuError printed "no WebGPU error during CreateSingleBatch test"
+
+            testCase "MeshData.empty, MeshData.merge, and MeshBuilder.AddRawMesh preserve geometry and offset indices"
+            <| fun () ->
+                Expect.equal MeshData.empty.Vertices.Length 0 "MeshData.empty has 0 vertices"
+                Expect.equal MeshData.empty.Indices.Length 0 "MeshData.empty has 0 indices"
+
+                let mergedNull = MeshData.merge null
+                Expect.equal mergedNull.Vertices.Length 0 "MeshData.merge null returns empty vertices"
+                Expect.equal mergedNull.Indices.Length 0 "MeshData.merge null returns empty indices"
+
+                let meshA = Primitives.unitBox ()
+                let meshB = Primitives.unitGableRoof ()
+                let merged = MeshData.merge [| meshA; MeshData.empty; meshB |]
+
+                Expect.equal merged.Vertices.Length (meshA.Vertices.Length + meshB.Vertices.Length) "MeshData.merge sums vertex counts"
+
+                Expect.equal merged.Indices.Length (meshA.Indices.Length + meshB.Indices.Length) "MeshData.merge sums index counts"
+
+                let offset = uint32 meshA.Vertices.Length
+
+                for i = 0 to meshA.Vertices.Length - 1 do
+                    Expect.equal merged.Vertices[i] meshA.Vertices[i] $"meshA vertex {i} preserved"
+
+                for i = 0 to meshB.Vertices.Length - 1 do
+                    Expect.equal merged.Vertices[meshA.Vertices.Length + i] meshB.Vertices[i] $"meshB vertex {i} preserved"
+
+                for i = 0 to meshA.Indices.Length - 1 do
+                    Expect.equal merged.Indices[i] meshA.Indices[i] $"meshA index {i} preserved"
+
+                for i = 0 to meshB.Indices.Length - 1 do
+                    Expect.equal merged.Indices[meshA.Indices.Length + i] (meshB.Indices[i] + offset) $"meshB index {i} offset by {offset}"
+
+                let mb = MeshBuilder ()
+                mb.AddRawMesh meshA
+                mb.AddRawMesh meshB
+                let rawBuilt = mb.ToMeshData ()
+                Expect.equal rawBuilt.Vertices merged.Vertices "AddRawMesh matches MeshData.merge vertices"
+                Expect.equal rawBuilt.Indices merged.Indices "AddRawMesh matches MeshData.merge indices"
+
+                Expect.throwsT<ArgumentNullException>
+                    (fun () -> mb.AddRawMesh (Unchecked.defaultof<MeshData>))
+                    "AddRawMesh null throws ArgumentNullException"
+
+            testCase
+                "Primitives.convexPolyhedron and MeshBuilder.AddConvexPolyhedron produce outward CCW triangles and normals for mixed CW and CCW faces"
+            <| fun () ->
+                Expect.throwsT<ArgumentNullException>
+                    (fun () ->
+                        Primitives.convexPolyhedron null [||] RgbaColor.white
+                        |> ignore)
+                    "convexPolyhedron null vertices throws ArgumentNullException"
+
+                Expect.throwsT<ArgumentNullException>
+                    (fun () ->
+                        Primitives.convexPolyhedron [||] null RgbaColor.white
+                        |> ignore)
+                    "convexPolyhedron null faces throws ArgumentNullException"
+
+                let cubeVerts =
+                    [|
+                        Vector3 (-0.5f, -0.5f, -0.5f) // 0
+                        Vector3 (0.5f, -0.5f, -0.5f) // 1
+                        Vector3 (0.5f, 0.5f, -0.5f) // 2
+                        Vector3 (-0.5f, 0.5f, -0.5f) // 3
+                        Vector3 (-0.5f, -0.5f, 0.5f) // 4
+                        Vector3 (0.5f, -0.5f, 0.5f) // 5
+                        Vector3 (0.5f, 0.5f, 0.5f) // 6
+                        Vector3 (-0.5f, 0.5f, 0.5f) // 7
+                    |]
+
+                // 3 CCW outward faces + 3 intentionally CW inward faces
+                let mixedFaces: int array array =
+                    [|
+                        [| 4; 5; 6; 7 |] // +Z CCW
+                        [| 1; 2; 3; 0 |] // -Z CW (reversed!)
+                        [| 5; 1; 2; 6 |] // +X CCW
+                        [| 0; 3; 7; 4 |] // -X CW (reversed!)
+                        [| 3; 2; 6; 7 |] // +Y CW (reversed!)
+                        [| 0; 1; 5; 4 |] // -Y CCW
+                    |]
+
+                let tint = RgbaColor (0.25f, 0.75f, 0.5f, 1.0f)
+                let poly = Primitives.convexPolyhedron cubeVerts mixedFaces tint
+
+                Expect.equal poly.Vertices.Length 24 "6 quad faces produce 24 flat-shaded vertices"
+                Expect.equal poly.Indices.Length 36 "6 quad faces produce 12 triangles (36 indices)"
+
+                let polyCentroid = Vector3.Zero
+                let expectedColor = tint.ToVector4 ()
+
+                for v in poly.Vertices do
+                    Expect.equal v.Color expectedColor "vertex color equals color.ToVector4()"
+
+                let mutable triIdx = 0
+
+                while triIdx + 2 < poly.Indices.Length do
+                    let v0 = poly.Vertices[int poly.Indices[triIdx]]
+                    let v1 = poly.Vertices[int poly.Indices[triIdx + 1]]
+                    let v2 = poly.Vertices[int poly.Indices[triIdx + 2]]
+                    let triNormal = Vector3.Cross (v1.Position - v0.Position, v2.Position - v0.Position)
+                    let triCenter = (v0.Position + v1.Position + v2.Position) / 3.0f
+                    Expect.isGreaterThan (triNormal.LengthSquared ()) 1e-6f "triangle is non-degenerate"
+                    Expect.isGreaterThan (Vector3.Dot (triNormal, v0.Normal)) 0.0f "triangle winding is CCW relative to vertex normal"
+                    Expect.isGreaterThan (Vector3.Dot (v0.Normal, triCenter - polyCentroid)) 0.0f "vertex normal points outward from centroid"
+                    triIdx <- triIdx + 3
+
+                // Verify unreferenced vertices in a larger pool do not bias centroid
+                let pool = Array.append [| Vector3 (1000.0f, 1000.0f, 1000.0f) |] cubeVerts
+
+                let shiftedFaces =
+                    mixedFaces
+                    |> Array.map (Array.map (fun idx -> idx + 1))
+
+                let mb = MeshBuilder ()
+                mb.AddConvexPolyhedron (ReadOnlySpan<Vector3>(pool), shiftedFaces, tint)
+                let fromPool = mb.ToMeshData ()
+                Expect.equal fromPool.Vertices poly.Vertices "unreferenced vertices in pool do not alter outward normals"
+                Expect.equal fromPool.Indices poly.Indices "unreferenced vertices in pool do not alter winding"
+
+                // Render with back-face culling enabled to confirm every face is outward-CCW on GPU
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        use ctx = new WgpuContext (initialWidth = 64, initialHeight = 64)
+                        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+                        use mesh = ctx.UploadMesh poly
+                        use batch = ctx.CreateBatch (mesh, BlendMode.Opaque, doubleSided = false)
+
+                        batch.SetSingle (
+                            Instance3D.trs
+                                Vector3.Zero
+                                0.0f
+                                (Vector3 (1.8f, 1.8f, 1.8f))
+                                RgbaColor.white
+                                0.5f
+                                1u
+                                (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+                        )
+
+                        ScenePass.create cam
+                        |> ScenePass.withClear RgbaColor.black
+                        |> ScenePass.withBatches [| batch |]
+                        |> WgpuContext.render ctx
+                        |> ignore
+
+                        // Also rotate 180 deg so -Z (originally CW) faces camera and still passes culling
+                        batch.SetSingle (
+                            Instance3D.trs
+                                Vector3.Zero
+                                180.0f
+                                (Vector3 (1.8f, 1.8f, 1.8f))
+                                RgbaColor.white
+                                0.5f
+                                1u
+                                (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+                        )
+
+                        ScenePass.create cam
+                        |> ScenePass.withClear RgbaColor.black
+                        |> ScenePass.withBatches [| batch |]
+                        |> WgpuContext.render ctx
+                        |> ignore
+
+                        let struct (_, g, _, _) = pixelAt ctx 32 32
+                        Expect.isGreaterThan g 150uy "originally CW back face passes CCW back-face culling")
+
+                expectNoWgpuError printed "no WebGPU error during convexPolyhedron test"
+
+            testCase "RgbaColor.black, transparent, lerp, and toHex handle clamping, NaN, and round-trips"
+            <| fun () ->
+                Expect.equal RgbaColor.black (RgbaColor (0.0f, 0.0f, 0.0f, 1.0f)) "RgbaColor.black"
+                Expect.equal RgbaColor.transparent (RgbaColor (0.0f, 0.0f, 0.0f, 0.0f)) "RgbaColor.transparent"
+
+                let a = RgbaColor (0.2f, 0.4f, 0.6f, 0.8f)
+                let b = RgbaColor (0.8f, 0.2f, 1.0f, 0.4f)
+                Expect.equal (RgbaColor.lerp a b 0.0f) a "lerp at t = 0 returns a"
+                Expect.equal (RgbaColor.lerp a b 1.0f) b "lerp at t = 1 returns b"
+                Expect.equal (RgbaColor.lerp a b -0.5f) a "lerp clamps negative t to 0"
+                Expect.equal (RgbaColor.lerp a b 1.5f) b "lerp clamps t > 1 to 1"
+                Expect.equal (RgbaColor.lerp a b Single.NaN) a "lerp guards NaN by returning a"
+
+                let mid = RgbaColor.lerp a b 0.5f
+                Expect.floatClose Accuracy.high (float mid.R) 0.5 "lerp mid R"
+                Expect.floatClose Accuracy.high (float mid.G) 0.3 "lerp mid G"
+                Expect.floatClose Accuracy.high (float mid.B) 0.8 "lerp mid B"
+                Expect.floatClose Accuracy.high (float mid.A) 0.6 "lerp mid A"
+
+                Expect.equal (RgbaColor.toHex (RgbaColor (1.0f, 0.0f, 0.0f, 1.0f))) "#ff0000" "opaque red formats as #rrggbb"
+                Expect.equal (RgbaColor.toHex (RgbaColor (-0.2f, 1.5f, 0.0f, 1.2f))) "#00ff00" "toHex clamps out-of-range channels"
+                Expect.equal (RgbaColor.toHex (RgbaColor (0.0f, 1.0f, 0.0f, 128.0f / 255.0f))) "#00ff0080" "translucent formats as #rrggbbaa"
+
+                for (r, g, b8, a8) in
+                    [
+                        (0uy, 0uy, 0uy, 255uy)
+                        (18uy, 52uy, 86uy, 255uy)
+                        (38uy, 208uy, 124uy, 128uy)
+                        (255uy, 255uy, 255uy, 0uy)
+                    ] do
+                    let orig = RgbaColor.fromRgba32 r g b8 a8
+                    let rt = RgbaColor.fromHex (RgbaColor.toHex orig)
+                    Expect.equal (int (MathF.Round (rt.R * 255.0f))) (int r) "toHex/fromHex R round-trip"
+                    Expect.equal (int (MathF.Round (rt.G * 255.0f))) (int g) "toHex/fromHex G round-trip"
+                    Expect.equal (int (MathF.Round (rt.B * 255.0f))) (int b8) "toHex/fromHex B round-trip"
+                    Expect.equal (int (MathF.Round (rt.A * 255.0f))) (int a8) "toHex/fromHex A round-trip"
+
+            testCase "ViewportRect, ScenePass.withViewport, RenderPasses, and PickPasses isolate side-by-side viewports and handle overlap"
+            <| fun () ->
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () -> ViewportRect.create -1 0 10 10 |> ignore)
+                    "ViewportRect.create rejects negative X"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () -> ViewportRect.create 0 -1 10 10 |> ignore)
+                    "ViewportRect.create rejects negative Y"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () -> ViewportRect.create 0 0 0 10 |> ignore)
+                    "ViewportRect.create rejects zero Width"
+
+                Expect.throwsT<ArgumentOutOfRangeException>
+                    (fun () -> ViewportRect.create 0 0 10 0 |> ignore)
+                    "ViewportRect.create rejects zero Height"
+
+                let leftVp = ViewportRect.create 0 0 160 200
+                let rightVp = ViewportRect.create 160 0 160 200
+                Expect.isTrue (leftVp.Contains (0, 0)) "leftVp contains top-left"
+                Expect.isTrue (leftVp.Contains (159, 199)) "leftVp contains bottom-right inside"
+                Expect.isFalse (leftVp.Contains (160, 100)) "leftVp excludes right boundary"
+                Expect.isTrue (rightVp.Contains (160, 0)) "rightVp contains left boundary"
+                Expect.isFalse (rightVp.Contains (320, 100)) "rightVp excludes outer right boundary"
+
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        use ctx = new WgpuContext (initialWidth = 320, initialHeight = 200)
+                        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+                        use boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+
+                        use leftBatch =
+                            ctx.CreateSingleBatch (
+                                boxMesh,
+                                instance =
+                                    Instance3D.trs
+                                        Vector3.Zero
+                                        0.0f
+                                        (Vector3 (1.2f, 1.2f, 0.2f))
+                                        (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f))
+                                        0.5f
+                                        101u
+                                        (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+                            )
+
+                        use rightBatch =
+                            ctx.CreateSingleBatch (
+                                boxMesh,
+                                instance =
+                                    Instance3D.trs
+                                        Vector3.Zero
+                                        0.0f
+                                        (Vector3 (1.2f, 1.2f, 0.2f))
+                                        (RgbaColor (1.0f, 1.0f, 0.0f, 1.0f))
+                                        0.5f
+                                        202u
+                                        (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+                            )
+
+                        let leftClear = RgbaColor (0.4f, 0.0f, 0.0f, 1.0f)
+                        let rightClear = RgbaColor (0.0f, 0.0f, 0.4f, 1.0f)
+
+                        let leftPass =
+                            ScenePass.create cam
+                            |> ScenePass.withClear leftClear
+                            |> ScenePass.withViewport leftVp
+                            |> ScenePass.withBatches [| leftBatch |]
+
+                        let rightPass =
+                            ScenePass.create cam
+                            |> ScenePass.withClear rightClear
+                            |> ScenePass.withViewport rightVp
+                            |> ScenePass.withBatches [| rightBatch |]
+
+                        let passes = [| leftPass; rightPass |]
+                        let metrics = ctx.RenderPasses passes
+                        Expect.equal metrics.DrawCalls 2 "RenderPasses aggregates DrawCalls across both passes"
+                        Expect.equal metrics.InstanceCount 2 "RenderPasses aggregates InstanceCount across both passes"
+
+                        // Left background & object
+                        let struct (lbgR, lbgG, lbgB, _) = pixelAt ctx 10 10
+                        Expect.isLessThanOrEqual (abs (int lbgR - 102)) 2 "left clear R ~ 102"
+                        Expect.equal lbgG 0uy "left clear G = 0"
+                        Expect.equal lbgB 0uy "left clear B = 0"
+
+                        let struct (loR, loG, loB, _) = pixelAt ctx 80 100
+                        Expect.equal loR 0uy "left object center R = 0"
+                        Expect.isGreaterThanOrEqual loG 254uy "left object center G >= 254"
+                        Expect.equal loB 0uy "left object center B = 0"
+
+                        // Right background & object
+                        let struct (rbgR, rbgG, rbgB, _) = pixelAt ctx 310 10
+                        Expect.equal rbgR 0uy "right clear R = 0"
+                        Expect.equal rbgG 0uy "right clear G = 0"
+                        Expect.isLessThanOrEqual (abs (int rbgB - 102)) 2 "right clear B ~ 102"
+
+                        let struct (roR, roG, roB, _) = pixelAt ctx 240 100
+                        Expect.isGreaterThanOrEqual roR 254uy "right object center R >= 254"
+                        Expect.isGreaterThanOrEqual roG 254uy "right object center G >= 254"
+                        Expect.equal roB 0uy "right object center B = 0"
+
+                        // Picking isolation and PickPasses
+                        Expect.equal (ctx.Pick (240, 100, leftPass)) ValueNone "Pick outside leftVp returns ValueNone"
+                        Expect.equal (ctx.Pick (80, 100, rightPass)) ValueNone "Pick outside rightVp returns ValueNone"
+
+                        Expect.equal
+                            (ctx.PickPasses (80, 100, passes)
+                             |> ValueOption.map _.PickId)
+                            (ValueSome 101u)
+                            "PickPasses resolves 101u at left center (80, 100)"
+
+                        Expect.equal
+                            (ctx.PickPasses (240, 100, passes)
+                             |> ValueOption.map _.PickId)
+                            (ValueSome 202u)
+                            "PickPasses resolves 202u at right center (240, 100)"
+
+                        // Span overload & overlapping topmost viewport wins
+                        let fullPass =
+                            ScenePass.create cam
+                            |> ScenePass.withClear RgbaColor.black
+                            |> ScenePass.withBatches [| leftBatch |]
+
+                        let overlayVp = ViewportRect.create 100 60 120 80
+
+                        let overlayPass =
+                            ScenePass.create cam
+                            |> ScenePass.withClear rightClear
+                            |> ScenePass.withViewport overlayVp
+                            |> ScenePass.withBatches [| rightBatch |]
+
+                        let overlap = [| fullPass; overlayPass |]
+
+                        ctx.RenderPasses (ReadOnlySpan<ScenePass>(overlap))
+                        |> ignore
+
+                        Expect.equal
+                            (ctx.PickPasses (160, 100, ReadOnlySpan<ScenePass>(overlap))
+                             |> ValueOption.map _.PickId)
+                            (ValueSome 202u)
+                            "PickPasses gives topmost/last-drawn overlapping viewport precedence"
+
+                        // Out-of-bounds ViewportRect clamps cleanly without WebGPU validation error
+                        let clippedPass =
+                            ScenePass.create cam
+                            |> ScenePass.withViewport (ViewportRect.create 280 160 100 100)
+                            |> ScenePass.withBatches [| rightBatch |]
+
+                        ctx.RenderPasses [| fullPass; clippedPass |]
+                        |> ignore)
+
+                expectNoWgpuError printed "no WebGPU error during ViewportRect / RenderPasses / PickPasses test"
         ]
 
 [<Tests>]
@@ -1667,6 +2316,103 @@ let wgpuSdlTests =
                     Expect.throwsT<ObjectDisposedException>
                         (fun () -> pass |> WgpuSdlSurface.render surface |> ignore)
                         "rendering after Dispose throws ObjectDisposedException")
+
+            testCase "WgpuSdlSurface.RenderPasses renders side-by-side ViewportRect passes into a hidden composited window"
+            <| fun () ->
+                let printed =
+                    captureWgpuConsoleErrors (fun () ->
+                        onHostThread (fun () ->
+                            use window =
+                                Window.Create ("WgpuSdlSurface Multi-Pass Test", 320, 200, hidden = true)
+
+                            window.Host.SetDeviceScale 1.0f
+                            window.Host.Resize (320, 200)
+
+                            window.Host.Document.body.innerHTML <-
+                                """<style>html, body { margin: 0; padding: 0; overflow: hidden; }</style><div id="vp" style="width:320px;height:200px"></div>"""
+
+                            let vp = window.Host.Document.getElementById "vp"
+
+                            use wgpu =
+                                window
+                                |> WgpuSdlSurface.createContextSized 320 200
+
+                            use surface = vp |> WgpuSdlSurface.bind window wgpu
+                            let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+                            use boxMesh = wgpu.UploadMesh (Primitives.unitBox ())
+
+                            use leftBatch =
+                                wgpu.CreateSingleBatch (
+                                    boxMesh,
+                                    instance =
+                                        Instance3D.trs
+                                            Vector3.Zero
+                                            0.0f
+                                            (Vector3 (1.2f, 1.2f, 0.2f))
+                                            (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f))
+                                            0.5f
+                                            101u
+                                            (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+                                )
+
+                            use rightBatch =
+                                wgpu.CreateSingleBatch (
+                                    boxMesh,
+                                    instance =
+                                        Instance3D.trs
+                                            Vector3.Zero
+                                            0.0f
+                                            (Vector3 (1.2f, 1.2f, 0.2f))
+                                            (RgbaColor (1.0f, 1.0f, 0.0f, 1.0f))
+                                            0.5f
+                                            202u
+                                            (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+                                )
+
+                            let leftPass =
+                                ScenePass.create cam
+                                |> ScenePass.withClear (RgbaColor (0.4f, 0.0f, 0.0f, 1.0f))
+                                |> ScenePass.withViewport (ViewportRect.create 0 0 160 200)
+                                |> ScenePass.withBatches [| leftBatch |]
+
+                            let rightPass =
+                                ScenePass.create cam
+                                |> ScenePass.withClear (RgbaColor (0.0f, 0.0f, 0.4f, 1.0f))
+                                |> ScenePass.withViewport (ViewportRect.create 160 0 160 200)
+                                |> ScenePass.withBatches [| rightBatch |]
+
+                            let metrics =
+                                surface.RenderPasses (ReadOnlySpan<ScenePass>([| leftPass; rightPass |]))
+
+                            Expect.equal metrics.DrawCalls 2 "WgpuSdlSurface.RenderPasses executes both passes"
+                            Expect.equal surface.FramesPresented 1L "WgpuSdlSurface.RenderPasses publishes 1 composited frame"
+
+                            window.Present ()
+                            let readBuf = Array.zeroCreate<byte>(320 * 200 * 4)
+                            let struct (fw, fh) = window.ReadPixelsInto (Span<byte>(readBuf))
+                            let frame = struct (fw, fh, readBuf)
+
+                            let struct (lbgR, lbgG, lbgB, _) = rgbaAt frame 10 10
+                            Expect.isGreaterThan lbgR 80uy "SDL left clear R > 80"
+                            Expect.isLessThan lbgG 20uy "SDL left clear G < 20"
+                            Expect.isLessThan lbgB 20uy "SDL left clear B < 20"
+
+                            let struct (loR, loG, loB, _) = rgbaAt frame 80 100
+                            Expect.isLessThan loR 20uy "SDL left object R < 20"
+                            Expect.isGreaterThan loG 230uy "SDL left object G > 230"
+                            Expect.isLessThan loB 20uy "SDL left object B < 20"
+
+                            let struct (rbgR, rbgG, rbgB, _) = rgbaAt frame 310 10
+                            Expect.isLessThan rbgR 20uy "SDL right clear R < 20"
+                            Expect.isLessThan rbgG 20uy "SDL right clear G < 20"
+                            Expect.isGreaterThan rbgB 80uy "SDL right clear B > 80"
+
+                            let struct (roR, roG, roB, _) = rgbaAt frame 240 100
+                            Expect.isGreaterThan roR 230uy "SDL right object R > 230"
+                            Expect.isGreaterThan roG 230uy "SDL right object G > 230"
+                            Expect.isLessThan roB 20uy "SDL right object B < 20"))
+
+                expectNoWgpuError printed "no WebGPU error during WgpuSdlSurface.RenderPasses test"
         ]
 
 [<EntryPoint>]
