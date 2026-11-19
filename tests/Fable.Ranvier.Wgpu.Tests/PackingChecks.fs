@@ -119,10 +119,57 @@ let cameraValidation () =
             throwsOutOfRange (fun () ->
                 Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 0.0f 0.5f
                 |> ignore)
+        negFitRadius =
+            throwsOutOfRange (fun () ->
+                Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f -1.0f 0.5f
+                |> ignore)
+        nanFitRadius =
+            throwsOutOfRange (fun () ->
+                Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f Single.NaN 0.5f
+                |> ignore)
+        infFitRadius =
+            throwsOutOfRange (fun () ->
+                Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f Single.PositiveInfinity 0.5f
+                |> ignore)
         nanPerspectiveness =
             throwsOutOfRange (fun () ->
                 Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 2.0f Single.NaN
                 |> ignore)
+        posInfPerspectiveness =
+            throwsOutOfRange (fun () ->
+                Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 2.0f Single.PositiveInfinity
+                |> ignore)
+        negInfPerspectiveness =
+            throwsOutOfRange (fun () ->
+                Camera3D.orbitPerspectiveness Numerics.Vector3.Zero 0.0f 0.0f 2.0f Single.NegativeInfinity
+                |> ignore)
+    |}
+
+/// <summary>Checks 3-arg <c>LineVertex3D</c> <c>Pad</c> values and float offset `+3` in staging buffer.</summary>
+let lineVertexPacking () =
+    let buffer = Packing.create 16
+    let p0 = Numerics.Vector3 (1.25f, -2.5f, 3.75f)
+    let p1 = Numerics.Vector3 (-4.0f, 5.0f, 6.5f)
+    let c0 = RgbaColor (0.25f, 0.5f, 0.75f, 1.0f)
+    let c1 = Numerics.Vector4 (0.8f, 0.6f, 0.4f, 0.9f)
+    let vDefault = LineVertex3D (p0, c0)
+    let vExemptRgba = LineVertex3D (p0, c0, true)
+    let vExemptVec4 = LineVertex3D (p1, c1, true)
+    let vClipped = LineVertex3D (p1, c1, false)
+    let verts = [| vExemptRgba; vExemptVec4; vDefault; vClipped |]
+
+    let byteCount =
+        Packing.lineVertices buffer (ReadOnlySpan<LineVertex3D>(verts)) verts.Length
+
+    let floats = Array.init (byteCount / 4) (fun i -> float buffer.F32[i])
+
+    {|
+        defaultPad = float vDefault.Pad
+        exemptRgbaPad = float vExemptRgba.Pad
+        exemptVec4Pad = float vExemptVec4.Pad
+        clippedPad = float vClipped.Pad
+        byteCount = byteCount
+        floats = floats
     |}
 
 let private smallScaleCheck (cam: Camera3D) =

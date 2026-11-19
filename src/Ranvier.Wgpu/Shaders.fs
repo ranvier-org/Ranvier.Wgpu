@@ -284,7 +284,7 @@ struct LineVsIn {
 
 struct LineVsOut {
     @builtin(position) clipPos: vec4<f32>,
-    @location(0) worldPos: vec3<f32>,
+    @location(0) worldPosPad: vec4<f32>,
     @location(1) color: vec4<f32>,
 };
 
@@ -293,15 +293,16 @@ fn vs_line(in: LineVsIn) -> LineVsOut {
     var out: LineVsOut;
     let wp = in.posPad.xyz;
     out.clipPos = u.viewProj * vec4<f32>(wp, 1.0);
-    out.worldPos = wp;
+    out.worldPosPad = in.posPad;
     out.color = in.color;
     return out;
 }
 
 @fragment
 fn fs_line(in: LineVsOut) -> @location(0) vec4<f32> {
-    let sectionActive = length(u.clipPlane.xyz) > 0.5;
-    if (sectionActive && (dot(in.worldPos, u.clipPlane.xyz) + u.clipPlane.w) < 0.0) {
+    let ignoreClip = in.worldPosPad.w > 0.5;
+    let sectionActive = (!ignoreClip) && (length(u.clipPlane.xyz) > 0.5);
+    if (sectionActive && (dot(in.worldPosPad.xyz, u.clipPlane.xyz) + u.clipPlane.w) < 0.0) {
         discard;
     }
     if (in.color.a <= 0.002) {

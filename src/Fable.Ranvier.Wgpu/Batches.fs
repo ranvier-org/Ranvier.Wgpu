@@ -146,9 +146,22 @@ type private DynamicBatchBuffer
             shadowBuffer <- null
             shadowU32 <- Unchecked.defaultof<JS.Uint32Array>
 
+module private MeshValidation =
+    let validate (mesh: MeshData) =
+        if isNull (box mesh) then
+            nullArg (nameof mesh)
+
+        if isNull mesh.Vertices then
+            nullArg "mesh.Vertices"
+
+        if isNull mesh.Indices then
+            nullArg "mesh.Indices"
+
 /// <summary>GPU-resident indexed triangle mesh uploaded to a <see cref="T:Ranvier.Wgpu.WgpuContext"/>.</summary>
 [<Sealed>]
 type MeshHandle internal (backend: ISceneBackend, staging: PackBuffer, mesh: MeshData) =
+    do MeshValidation.validate mesh
+
     let asUint32View (indices: uint32 array) : uint32 array =
         // A project compiled without typed arrays has a plain array here.
         if JS.Constructors.ArrayBuffer.isView indices then
@@ -262,9 +275,7 @@ type MeshHandle internal (backend: ISceneBackend, staging: PackBuffer, mesh: Mes
     /// <summary>Replaces both vertex and index buffers from `mesh`, growing GPU buffers by doubling when capacity is exceeded.</summary>
     member _.UpdateMesh(mesh: MeshData) =
         ensureAlive ()
-
-        if isNull mesh.Vertices || isNull mesh.Indices then
-            nullArg (nameof mesh)
+        MeshValidation.validate mesh
 
         if mesh.Vertices.Length > 0 then
             ensureVertexCapacity mesh.Vertices.Length

@@ -76,7 +76,42 @@ test("Camera3D.orthographic and orbitPerspectiveness validate arguments and clam
   assert.equal(v.nanHalfHeight, true);
   assert.equal(v.infDistance, true);
   assert.equal(v.zeroFitRadius, true);
+  assert.equal(v.negFitRadius, true);
+  assert.equal(v.nanFitRadius, true);
+  assert.equal(v.infFitRadius, true);
   assert.equal(v.nanPerspectiveness, true);
+  assert.equal(v.posInfPerspectiveness, true);
+  assert.equal(v.negInfPerspectiveness, true);
+});
+
+test("LineVertex3D(pos, col, ignoreSectionPlane) preserves Pad and packs slot +3 into staging Float32Array", () => {
+  const r = checks.lineVertexPacking();
+  assert.equal(r.defaultPad, 0);
+  assert.equal(r.exemptRgbaPad, 1);
+  assert.equal(r.exemptVec4Pad, 1);
+  assert.equal(r.clippedPad, 0);
+  assert.equal(r.byteCount, 4 * 32);
+  // Vertex 0: (p0, c0, true) -> float offset +3 is 1.0
+  assert.equal(r.floats[0], 1.25);
+  assert.equal(r.floats[1], -2.5);
+  assert.equal(r.floats[2], 3.75);
+  assert.equal(r.floats[3], 1);
+  assert.equal(r.floats[4], 0.25);
+  assert.equal(r.floats[5], 0.5);
+  assert.equal(r.floats[6], 0.75);
+  assert.equal(r.floats[7], 1);
+  // Vertex 1: (p1, Vector4 c1, true) -> float offset +3 is 1.0
+  assert.equal(r.floats[8], -4);
+  assert.equal(r.floats[9], 5);
+  assert.equal(r.floats[10], 6.5);
+  assert.equal(r.floats[11], 1);
+  assert.ok(Math.abs(r.floats[12] - 0.8) < 1e-6);
+  assert.ok(Math.abs(r.floats[13] - 0.6) < 1e-6);
+  assert.ok(Math.abs(r.floats[14] - 0.4) < 1e-6);
+  assert.ok(Math.abs(r.floats[15] - 0.9) < 1e-6);
+  // Vertex 2 (default 2-arg) & Vertex 3 (explicit false) -> float offset +3 is 0.0
+  assert.equal(r.floats[19], 0);
+  assert.equal(r.floats[27], 0);
 });
 
 test("Camera3D.orthographic and orbitPerspectiveness keep 0 < NearPlane < distance < FarPlane and project Target to center on small-scale scenes", () => {

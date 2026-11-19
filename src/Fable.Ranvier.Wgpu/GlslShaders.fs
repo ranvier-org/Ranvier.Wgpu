@@ -256,22 +256,23 @@ layout(location = 1) in vec4 a_color;
 #endif
 
 // struct LineVsOut; clipPos is gl_Position
-VARYING vec3 v_worldPos;
+VARYING vec4 v_worldPosPad;
 VARYING vec4 v_color;
 
 #ifdef VS_LINE
 void vs_line() {
     vec3 wp = a_posPad.xyz;
     gl_Position = u.viewProj * vec4(wp, 1.0);
-    v_worldPos = wp;
+    v_worldPosPad = a_posPad;
     v_color = a_color;
 }
 #endif
 
 #ifdef FS_LINE
 vec4 fs_line() {
-    bool sectionActive = length(u.clipPlane.xyz) > 0.5;
-    if (sectionActive && (dot(v_worldPos, u.clipPlane.xyz) + u.clipPlane.w) < 0.0) {
+    bool ignoreClip = v_worldPosPad.w > 0.5;
+    bool sectionActive = (!ignoreClip) && (length(u.clipPlane.xyz) > 0.5);
+    if (sectionActive && (dot(v_worldPosPad.xyz, u.clipPlane.xyz) + u.clipPlane.w) < 0.0) {
         discard;
     }
     if (v_color.a <= 0.002) {

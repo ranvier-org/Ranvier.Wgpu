@@ -940,7 +940,19 @@ let dynamicMesh (canvas: obj) (backend: string) =
 
         mesh.UpdateVertexRange (4, ReadOnlySpan<Vertex3D>.Empty)
 
-        // Grow ONLY indexBuffer (vertexCount stays 4 <= capacity 4, indexCount grows 6 -> 12 > capacity 6)
+        // Direct vertex-only UpdateVertices growth past initial capacity (4 -> 8) with IndexBuffer unchanged
+        let yellow = Vector4 (1.0f, 1.0f, 0.0f, 1.0f)
+        let grownVerts = Array.append (makeQuad 0.75f yellow) (makeQuad 0.75f yellow)
+        mesh.UpdateVertices grownVerts
+
+        let vertGrownCounts =
+            [| mesh.VertexCount; int mesh.IndexCount; mesh.TriangleCount |]
+
+        ctx.Render pass |> ignore
+        let! pxVertGrown = ctx.ReadPixelsAsync ()
+        let! pickVertGrown = ctx.PickAsync (32, 32, pass)
+
+        // Grow ONLY indexBuffer (vertexCount stays 4 <= capacity 8, indexCount grows 6 -> 12 > capacity 6)
         // so WebGL2 must detect IndexBuffer change on the cached VAO even when VertexBuffer is unchanged.
         mesh.UpdateMesh
             {
@@ -953,7 +965,7 @@ let dynamicMesh (canvas: obj) (backend: string) =
         let! pxIdxGrown = ctx.ReadPixelsAsync ()
         let! pickIdxGrown = ctx.PickAsync (32, 32, pass)
 
-        // Grow BOTH vertexBuffer and indexBuffer past initial capacities (4 verts -> 24 verts, 12 indices -> 36 indices)
+        // Grow BOTH vertexBuffer and indexBuffer past initial capacities (8 -> 24 verts, 12 -> 36 indices)
         let box = Primitives.unitBox ()
         mesh.UpdateMesh box
         let boxCounts = [| mesh.VertexCount; int mesh.IndexCount; mesh.TriangleCount |]
@@ -962,7 +974,18 @@ let dynamicMesh (canvas: obj) (backend: string) =
         let! pickBox = ctx.PickAsync (32, 32, pass)
 
         let nullMeshThrows =
-            catchesNullArg (fun () -> mesh.UpdateMesh { Vertices = null; Indices = [||] })
+            catchesNullArg (fun () -> mesh.UpdateMesh (Unchecked.defaultof<MeshData>))
+            && catchesNullArg (fun () -> mesh.UpdateMesh { Vertices = null; Indices = [||] })
+            && catchesNullArg (fun () -> mesh.UpdateMesh { Vertices = [||]; Indices = null })
+            && catchesNullArg (fun () ->
+                ctx.UploadMesh (Unchecked.defaultof<MeshData>)
+                |> ignore)
+            && catchesNullArg (fun () ->
+                ctx.UploadMesh { Vertices = null; Indices = [||] }
+                |> ignore)
+            && catchesNullArg (fun () ->
+                ctx.UploadMesh { Vertices = [||]; Indices = null }
+                |> ignore)
 
         mesh.Dispose ()
 
@@ -987,6 +1010,9 @@ let dynamicMesh (canvas: obj) (backend: string) =
                 botRight = pixel px2 64 50 50
                 negThrows = negThrows
                 oobThrows = oobThrows
+                vertGrownCounts = vertGrownCounts
+                vertGrownPixel = pixel pxVertGrown 64 32 32
+                vertGrownPick = pickResult 32 32 pickVertGrown
                 idxGrownCounts = idxGrownCounts
                 idxGrownTris = idxGrownMetrics.TriangleCount
                 idxGrownPixel = pixel pxIdxGrown 64 32 32
@@ -1279,6 +1305,71 @@ let dynamicBatches (canvas: obj) (backend: string) =
                         oobRange = discOobRange
                         disposedThrows = discDisposedThrows
                     |}
+            |}
+
+        ctx.Dispose ()
+        return result
+    }
+
+/// <summary>
+/// Verifies <c>LineVertex3D(pos, col, true)</c> renders visible pixels inside the clipped half-space of an active
+/// <c>SectionPlane</c> while <c>LineVertex3D(pos, col, false)</c> is clipped on both WebGPU and WebGL2.
+/// </summary>
+let lineSectionPlane (canvas: obj) (backend: string) =
+    jsAsync {
+        let! ctx = WgpuContext.CreateAsync (canvas, 120, 60, backend = backendOf backend)
+        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 6.0f
+        let lines = ctx.CreateLineBatch ()
+
+        let green = RgbaColor (0.0f, 1.0f, 0.0f, 1.0f)
+        let red = RgbaColor (1.0f, 0.0f, 0.0f, 1.0f)
+        let blue = RgbaColor (0.0f, 0.0f, 1.0f, 1.0f)
+        let cyan = Vector4 (0.0f, 1.0f, 1.0f, 1.0f)
+
+        lines.UpdateVertices
+            [|
+                // y = +0.75 (unclipped half-space, row ~15)
+                LineVertex3D (Vector3 (-2.5f, 0.75f, 0.0f), green, false)
+                LineVertex3D (Vector3 (2.5f, 0.75f, 0.0f), green, false)
+                // y = -0.30 (clipped half-space, row ~36, not exempt -> discarded)
+                LineVertex3D (Vector3 (-2.5f, -0.30f, 0.0f), red, false)
+                LineVertex3D (Vector3 (2.5f, -0.30f, 0.0f), red, false)
+                // y = -0.75 (clipped half-space, row ~45, exempt via RgbaColor overload -> rendered)
+                LineVertex3D (Vector3 (-2.5f, -0.75f, 0.0f), blue, true)
+                LineVertex3D (Vector3 (2.5f, -0.75f, 0.0f), blue, true)
+                // y = -1.20 (clipped half-space, row ~54, exempt via Vector4 overload -> rendered)
+                LineVertex3D (Vector3 (-2.5f, -1.20f, 0.0f), cyan, true)
+                LineVertex3D (Vector3 (2.5f, -1.20f, 0.0f), cyan, true)
+            |]
+
+        let pass =
+            ScenePass.create cam
+            |> ScenePass.withClear (RgbaColor (0.0f, 0.0f, 0.0f, 1.0f))
+            |> ScenePass.withSection (SectionPlane.create Vector3.UnitY 0.0f)
+            |> ScenePass.withLines [| lines |]
+
+        ctx.Render pass |> ignore
+        let! pixels = ctx.ReadPixelsAsync ()
+
+        let brightest yMin yMax selector =
+            let mutable best = 0
+
+            for y = yMin to yMax do
+                let p = pixel pixels 120 60 y
+                let v = selector p
+
+                if v > best then
+                    best <- v
+
+            best
+
+        let result =
+            {|
+                backend = ctx.BackendName
+                unclippedGreen = brightest 12 18 (fun p -> p[1])
+                clippedRed = brightest 33 39 (fun p -> p[0])
+                exemptRgbaBlue = brightest 42 48 (fun p -> p[2])
+                exemptVec4Cyan = brightest 51 57 (fun p -> min p[1] p[2])
             |}
 
         ctx.Dispose ()
