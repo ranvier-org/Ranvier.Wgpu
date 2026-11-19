@@ -51,7 +51,8 @@ These have held since 0.1.0.
 - **Discs are not depth-sorted.** Disc batches are drawn last, in the order given, tested against the depth of
   opaque geometry and writing none. Sort overlapping translucent discs far to near. The same holds for
   `AlphaBlend` instance batches.
-- **Draw order in a pass** is fixed: opaque instance batches, line batches, alpha-blended instance batches, disc
+- **Draw order in a pass** is fixed across five stages: opaque instance batches, `AlphaBlend` batches with
+  `DrawBeforeLines = true`, line batches, standard `AlphaBlend` batches (`DrawBeforeLines = false`), and disc
   batches.
 
 A batch with nothing in it is skipped, so a pass may hold batches that are empty on some frames.

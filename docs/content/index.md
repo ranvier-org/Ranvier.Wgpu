@@ -47,11 +47,12 @@ let hit = pass |> WgpuContext.pick (ctx.Width / 2) (ctx.Height / 2) ctx
 ## Requirements and engine design limits
 
 - **Runtime & SDK floor**: Targets `net10.0` with `FSharp.Core` `10.0.100` or later, so any `.NET 10` SDK builds against the native and browser packages.
-- **Fixed pass draw order**: Each `ScenePass` draws in deterministic order:
+- **Fixed pass draw order**: Each `ScenePass` draws in deterministic five-stage order:
   1. `Opaque` `InstanceBatch` passes (depth-tested, depth-writing)
-  2. `LineBatch` passes (`LineList`, 4× MSAA premultiplied alpha, depth-tested against opaque geometry)
-  3. `AlphaBlend` `InstanceBatch` passes (premultiplied alpha, depth writes disabled)
-  4. `DiscBatch` passes (camera-facing SDF billboards, depth-tested against opaque geometry, depth writes disabled)
+  2. `AlphaBlend` `InstanceBatch` passes with `DrawBeforeLines = true` (backdrop panels behind hairlines; depth writes disabled)
+  3. `LineBatch` passes (`LineList`, 4× MSAA premultiplied alpha, depth-tested against opaque geometry)
+  4. `AlphaBlend` `InstanceBatch` passes with `DrawBeforeLines = false` (default; premultiplied alpha, depth writes disabled)
+  5. `DiscBatch` passes (camera-facing SDF billboards, depth-tested against opaque geometry, depth writes disabled)
   Empty batches (`Count = 0`) are skipped automatically.
 - **Intentional constraints**:
   - **No texture or sampler bindings**: Shaders receive `SceneUniforms` (`@binding(0)`), 16 `vec4<f32>` user uniform slots (`@binding(1)`), and vertex/instance attributes—surface detail is procedural or per-vertex.

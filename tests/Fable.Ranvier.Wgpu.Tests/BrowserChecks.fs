@@ -1606,10 +1606,14 @@ let createSingleBatchCheck (canvas: obj) (backend: string) =
         let customSingle =
             ctx.CreateSingleBatch (boxMesh, blendMode = BlendMode.Opaque, doubleSided = false, drawBeforeLines = false, instance = customInst)
 
+        let curriedSingle =
+            ctx
+            |> WgpuContext.createSingleBatch customInst boxMesh
+
         let pass =
             ScenePass.create cam
             |> ScenePass.withClear RgbaColor.black
-            |> ScenePass.withBatches [| customSingle |]
+            |> ScenePass.withBatches [| curriedSingle |]
 
         ctx.Render pass |> ignore
         let! pixels = ctx.ReadPixelsAsync ()
@@ -1619,7 +1623,7 @@ let createSingleBatchCheck (canvas: obj) (backend: string) =
             {|
                 backend = ctx.BackendName
                 defaultCount = defaultSingle.Count
-                customCount = customSingle.Count
+                customCount = if customSingle.Count = 1 then curriedSingle.Count else -1
                 centre = pixel pixels 64 32 32
                 pickId = (pickResult 32 32 hit).pickId
             |}
@@ -1700,14 +1704,14 @@ let viewportRenderPassesCheck (canvas: obj) (backend: string) =
         let passes = [| leftPass; rightPass |]
         let callsBefore = ctx.RenderCalls
         let framesBefore = ctx.FramesDelivered
-        let splitMetrics = ctx.RenderPasses passes
+        let splitMetrics = passes |> WgpuContext.renderPasses ctx
         let callsAfter = ctx.RenderCalls
         let framesAfter = ctx.FramesDelivered
         let! splitPixels = ctx.ReadPixelsAsync ()
 
         let! leftOutPick = ctx.PickAsync (240, 100, leftPass)
         let! rightOutPick = ctx.PickAsync (80, 100, rightPass)
-        let! pickLeft = ctx.PickPassesAsync (80, 100, passes)
+        let! pickLeft = passes |> WgpuContext.pickPassesAsync 80 100 ctx
         let! pickRight = ctx.PickPassesAsync (240, 100, passes)
         let! pickOutside = ctx.PickPassesAsync (-1, 100, passes)
 
@@ -1793,15 +1797,17 @@ let viewportRenderPassesCheck (canvas: obj) (backend: string) =
                 ctx.PickPassesAsync (0, 0, Unchecked.defaultof<ScenePass array>)
                 |> ignore)
 
+        let backendName = ctx.BackendName
         ctx.Dispose ()
 
         let disposedThrows =
-            catchesDisposed "WgpuContext" (fun () -> ctx.RenderPasses passes |> ignore)
+            catchesDisposed "WgpuContext" (fun () -> ctx.CreateSingleBatch boxMesh |> ignore)
+            && catchesDisposed "WgpuContext" (fun () -> ctx.RenderPasses passes |> ignore)
             && catchesDisposed "WgpuContext" (fun () -> ctx.PickPassesAsync (0, 0, passes) |> ignore)
 
         return
             {|
-                backend = ctx.BackendName
+                backend = backendName
                 splitDrawCalls = splitMetrics.DrawCalls
                 splitInstances = splitMetrics.InstanceCount
                 renderCallsDelta = callsAfter - callsBefore

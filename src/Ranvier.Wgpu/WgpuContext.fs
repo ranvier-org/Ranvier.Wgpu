@@ -1749,9 +1749,13 @@ type WgpuContext
         new InstanceBatch (device, queue, mesh, defaultArg blendMode BlendMode.Opaque, defaultArg doubleSided false, defaultArg drawBeforeLines false)
 
     /// <summary>Creates a hardware-instanced batch bound to `mesh` and populates it with one initial instance.</summary>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
     member this.CreateSingleBatch
         (mesh: MeshHandle, ?blendMode: BlendMode, ?doubleSided: bool, ?drawBeforeLines: bool, ?instance: Instance3D)
         : InstanceBatch =
+        if disposed then
+            raise (ObjectDisposedException (nameof WgpuContext))
+
         let batch =
             this.CreateBatch (mesh, ?blendMode = blendMode, ?doubleSided = doubleSided, ?drawBeforeLines = drawBeforeLines)
 
@@ -2230,6 +2234,10 @@ module WgpuContext =
     let inline createBatch (blendMode: BlendMode) (doubleSided: bool) (mesh: MeshHandle) (context: WgpuContext) : InstanceBatch =
         context.CreateBatch (mesh, blendMode, doubleSided)
 
+    /// <summary>Creates an opaque single-sided `InstanceBatch` populated with `instance` for `mesh` on `context`.</summary>
+    let inline createSingleBatch (instance: Instance3D) (mesh: MeshHandle) (context: WgpuContext) : InstanceBatch =
+        context.CreateSingleBatch (mesh, instance = instance)
+
     /// <summary>Creates a 4x-MSAA `LineBatch` on `context`.</summary>
     let inline createLineBatch (context: WgpuContext) : LineBatch =
         context.CreateLineBatch ()
@@ -2250,9 +2258,19 @@ module WgpuContext =
     let inline render (context: WgpuContext) (pass: ScenePass) : FrameMetrics =
         context.Render pass
 
+    /// <summary>Renders `passes` sequentially on `context` and updates `context.RgbaPixels`.</summary>
+    let inline renderPasses (context: WgpuContext) (passes: ScenePass array) : FrameMetrics =
+        context.RenderPasses passes
+
     /// <summary>Executes 1x1 GPU picking at `(px, py)` for `pass` on `context`.</summary>
     let inline pick (px: int) (py: int) (context: WgpuContext) (pass: ScenePass) : PickHit voption =
         context.Pick (px, py, pass)
+
+    /// <summary>
+    /// Executes 1x1 GPU picking at `(px, py)` against the topmost pass in `passes` containing `(px, py)` on `context`.
+    /// </summary>
+    let inline pickPasses (px: int) (py: int) (context: WgpuContext) (passes: ScenePass array) : PickHit voption =
+        context.PickPasses (px, py, passes)
 
     /// <summary>Resizes `context` to `width` by `height` device pixels.</summary>
     let inline resize (width: int) (height: int) (context: WgpuContext) : unit =

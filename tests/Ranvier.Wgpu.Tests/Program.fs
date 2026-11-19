@@ -1618,10 +1618,16 @@ let wgpuContextTests =
 
                         Expect.equal customSingle.Count 1 "custom CreateSingleBatch has Count = 1"
 
+                        use curriedSingle =
+                            ctx
+                            |> WgpuContext.createSingleBatch customInst boxMesh
+
+                        Expect.equal curriedSingle.Count 1 "WgpuContext.createSingleBatch has Count = 1"
+
                         let pass =
                             ScenePass.create cam
                             |> ScenePass.withClear RgbaColor.black
-                            |> ScenePass.withBatches [| customSingle |]
+                            |> ScenePass.withBatches [| curriedSingle |]
 
                         pass |> WgpuContext.render ctx |> ignore
                         let struct (r, g, b, a) = pixelAt ctx 32 32
@@ -1635,7 +1641,14 @@ let wgpuContextTests =
                              |> WgpuContext.pick 32 32 ctx
                              |> ValueOption.map _.PickId)
                             (ValueSome 77u)
-                            "customSingle picks PickId 77u")
+                            "customSingle picks PickId 77u"
+
+                        use disposedCtx = new WgpuContext (initialWidth = 16, initialHeight = 16)
+                        disposedCtx.Dispose ()
+
+                        Expect.throwsT<ObjectDisposedException>
+                            (fun () -> disposedCtx.CreateSingleBatch boxMesh |> ignore)
+                            "CreateSingleBatch on disposed context throws ObjectDisposedException")
 
                 expectNoWgpuError printed "no WebGPU error during CreateSingleBatch test"
 
@@ -1918,7 +1931,7 @@ let wgpuContextTests =
                             |> ScenePass.withBatches [| rightBatch |]
 
                         let passes = [| leftPass; rightPass |]
-                        let metrics = ctx.RenderPasses passes
+                        let metrics = passes |> WgpuContext.renderPasses ctx
                         Expect.equal metrics.DrawCalls 2 "RenderPasses aggregates DrawCalls across both passes"
                         Expect.equal metrics.InstanceCount 2 "RenderPasses aggregates InstanceCount across both passes"
 
@@ -1949,7 +1962,8 @@ let wgpuContextTests =
                         Expect.equal (ctx.Pick (80, 100, rightPass)) ValueNone "Pick outside rightVp returns ValueNone"
 
                         Expect.equal
-                            (ctx.PickPasses (80, 100, passes)
+                            (passes
+                             |> WgpuContext.pickPasses 80 100 ctx
                              |> ValueOption.map _.PickId)
                             (ValueSome 101u)
                             "PickPasses resolves 101u at left center (80, 100)"
@@ -1992,7 +2006,32 @@ let wgpuContextTests =
                             |> ScenePass.withBatches [| rightBatch |]
 
                         ctx.RenderPasses [| fullPass; clippedPass |]
-                        |> ignore)
+                        |> ignore
+
+                        // Empty RenderPasses clears cleanly with 0 draw calls
+                        let emptyMetrics =
+                            ctx.RenderPasses ([||], clearColor = RgbaColor (0.0f, 0.4f, 0.0f, 1.0f))
+
+                        Expect.equal emptyMetrics.DrawCalls 0 "empty RenderPasses returns 0 draw calls"
+                        Expect.equal emptyMetrics.InstanceCount 0 "empty RenderPasses returns 0 instances"
+                        let struct (ebgR, ebgG, ebgB, ebgA) = pixelAt ctx 10 10
+                        Expect.equal ebgR 0uy "empty RenderPasses clear R = 0"
+                        Expect.isLessThanOrEqual (abs (int ebgG - 102)) 2 "empty RenderPasses clear G ~ 102"
+                        Expect.equal ebgB 0uy "empty RenderPasses clear B = 0"
+                        Expect.equal ebgA 255uy "empty RenderPasses clear A = 255"
+
+                        // Null ScenePass array throws ArgumentNullException
+                        Expect.throwsT<ArgumentNullException>
+                            (fun () ->
+                                ctx.RenderPasses (Unchecked.defaultof<ScenePass array>)
+                                |> ignore)
+                            "RenderPasses with null ScenePass array throws ArgumentNullException"
+
+                        Expect.throwsT<ArgumentNullException>
+                            (fun () ->
+                                ctx.PickPasses (0, 0, Unchecked.defaultof<ScenePass array>)
+                                |> ignore)
+                            "PickPasses with null ScenePass array throws ArgumentNullException")
 
                 expectNoWgpuError printed "no WebGPU error during ViewportRect / RenderPasses / PickPasses test"
         ]
@@ -2410,7 +2449,14 @@ let wgpuSdlTests =
                             let struct (roR, roG, roB, _) = rgbaAt frame 240 100
                             Expect.isGreaterThan roR 230uy "SDL right object R > 230"
                             Expect.isGreaterThan roG 230uy "SDL right object G > 230"
-                            Expect.isLessThan roB 20uy "SDL right object B < 20"))
+                            Expect.isLessThan roB 20uy "SDL right object B < 20"
+
+                            let curriedMetrics =
+                                [| leftPass; rightPass |]
+                                |> WgpuSdlSurface.renderPasses surface
+
+                            Expect.equal curriedMetrics.DrawCalls 2 "WgpuSdlSurface.renderPasses executes both passes"
+                            Expect.equal surface.FramesPresented 2L "WgpuSdlSurface.renderPasses publishes second frame"))
 
                 expectNoWgpuError printed "no WebGPU error during WgpuSdlSurface.RenderPasses test"
         ]

@@ -1446,6 +1446,10 @@ module WgpuSdlSurface =
     let inline render (surface: WgpuSdlSurface) (pass: ScenePass) : FrameMetrics =
         surface.Render pass
 
+    /// <summary>Renders `passes` sequentially and publishes the combined frame into `surface`.</summary>
+    let inline renderPasses (surface: WgpuSdlSurface) (passes: ScenePass array) : FrameMetrics =
+        surface.RenderPasses passes
+
     /// <summary>Resizes `surface` and its `WgpuContext` to `width` by `height` device pixels.</summary>
     let inline resize (width: int) (height: int) (surface: WgpuSdlSurface) : unit =
         surface.Resize (width, height)

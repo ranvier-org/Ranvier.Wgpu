@@ -425,12 +425,6 @@ fn fs_clear(in: ClearVsOut) -> @location(0) vec4<f32> {
             let discPickPipe =
                 disc discPickShader "fs_disc_pick" TextureFormat.Rgba32Uint 1 false true
 
-            let! pipelineError = device.popErrorScope ()
-
-            match pipelineError with
-            | Some error -> raise (WgslException $"WGSL does not fit the scene pipelines. {error.message}")
-            | None -> ()
-
             let clearShader = device.createShaderModule {| code = SubViewportClearWgsl |}
             let clearLayout = device.createPipelineLayout {| bindGroupLayouts = [||] |}
 
@@ -449,6 +443,12 @@ fn fs_clear(in: ClearVsOut) -> @location(0) vec4<f32> {
                     false
                     false
                     CompareFunction.Always
+
+            let! pipelineError = device.popErrorScope ()
+
+            match pipelineError with
+            | Some error -> raise (WgslException $"WGSL does not fit the scene pipelines. {error.message}")
+            | None -> ()
 
             let resources =
                 {

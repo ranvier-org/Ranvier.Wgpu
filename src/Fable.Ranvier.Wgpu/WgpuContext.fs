@@ -327,9 +327,12 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
         )
 
     /// <summary>Creates a hardware-instanced batch bound to `mesh` and populates it with one initial instance.</summary>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
     member this.CreateSingleBatch
         (mesh: MeshHandle, ?blendMode: BlendMode, ?doubleSided: bool, ?drawBeforeLines: bool, ?instance: Instance3D)
         : InstanceBatch =
+        checkLive ()
+
         let batch =
             this.CreateBatch (mesh, ?blendMode = blendMode, ?doubleSided = doubleSided, ?drawBeforeLines = drawBeforeLines)
 
@@ -486,7 +489,7 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
         }
 
     /// <summary>Draws an array of `ScenePass` items sequentially into the canvas.</summary>
-    /// <exception cref="T:System.ArgumentNullException"><paramref name="passes"/> is null.</exception>
+    /// <exception cref="T:System.ArgumentNullException">`passes` is null.</exception>
     /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
     member this.RenderPasses(passes: ScenePass array, ?clearColor: RgbaColor) : FrameMetrics =
         if isNull passes then
@@ -598,7 +601,7 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
     /// <summary>
     /// Picks at pixel `(px, py)` against the topmost `ScenePass` in `passes` whose viewport contains `(px, py)`.
     /// </summary>
-    /// <exception cref="T:System.ArgumentNullException"><paramref name="passes"/> is null.</exception>
+    /// <exception cref="T:System.ArgumentNullException">`passes` is null.</exception>
     /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
     member this.PickPassesAsync(px: int, py: int, passes: ScenePass array) : JS.Promise<PickHit voption> =
         if isNull passes then
@@ -637,6 +640,10 @@ module WgpuContext =
     let inline createBatch (blendMode: BlendMode) (doubleSided: bool) (mesh: MeshHandle) (context: WgpuContext) : InstanceBatch =
         context.CreateBatch (mesh, blendMode, doubleSided)
 
+    /// <summary>Creates an opaque single-sided `InstanceBatch` populated with `instance` for `mesh` on `context`.</summary>
+    let inline createSingleBatch (instance: Instance3D) (mesh: MeshHandle) (context: WgpuContext) : InstanceBatch =
+        context.CreateSingleBatch (mesh, instance = instance)
+
     /// <summary>Creates a 4x-MSAA `LineBatch` on `context`.</summary>
     let inline createLineBatch (context: WgpuContext) : LineBatch =
         context.CreateLineBatch ()
@@ -661,9 +668,19 @@ module WgpuContext =
     let inline render (context: WgpuContext) (pass: ScenePass) : FrameMetrics =
         context.Render pass
 
+    /// <summary>Draws `passes` sequentially on `context` into its canvas.</summary>
+    let inline renderPasses (context: WgpuContext) (passes: ScenePass array) : FrameMetrics =
+        context.RenderPasses passes
+
     /// <summary>Executes 1x1 GPU picking at `(px, py)` for `pass` on `context`.</summary>
     let inline pickAsync (px: int) (py: int) (context: WgpuContext) (pass: ScenePass) : JS.Promise<PickHit voption> =
         context.PickAsync (px, py, pass)
+
+    /// <summary>
+    /// Executes 1x1 GPU picking at `(px, py)` against the topmost pass in `passes` containing `(px, py)` on `context`.
+    /// </summary>
+    let inline pickPassesAsync (px: int) (py: int) (context: WgpuContext) (passes: ScenePass array) : JS.Promise<PickHit voption> =
+        context.PickPassesAsync (px, py, passes)
 
     /// <summary>Resizes `context` to `width` by `height` device pixels.</summary>
     let inline resize (width: int) (height: int) (context: WgpuContext) : unit =
