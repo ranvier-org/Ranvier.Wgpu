@@ -320,7 +320,8 @@ type MeshHandle internal (backend: ISceneBackend, staging: PackBuffer, mesh: Mes
 /// Supports updating `Instance3D` transforms dynamically without recreating mesh geometry.
 /// </summary>
 [<Sealed>]
-type InstanceBatch internal (backend: ISceneBackend, staging: PackBuffer, mesh: MeshHandle, blendMode: BlendMode, doubleSided: bool) =
+type InstanceBatch
+    internal (backend: ISceneBackend, staging: PackBuffer, mesh: MeshHandle, blendMode: BlendMode, doubleSided: bool, drawBeforeLines: bool) =
     let buf =
         DynamicBatchBuffer (backend, staging, Packing.InstanceBytes, 16, 1, nameof InstanceBatch)
 
@@ -335,6 +336,9 @@ type InstanceBatch internal (backend: ISceneBackend, staging: PackBuffer, mesh: 
 
     /// <summary>True when back-face culling is disabled for this batch.</summary>
     member _.DoubleSided = doubleSided
+
+    /// <summary>True when this `AlphaBlend` batch renders before `LineBatch` hairlines instead of after them.</summary>
+    member _.DrawBeforeLines = drawBeforeLines
 
     /// <summary>Active instance count uploaded to the GPU.</summary>
     member _.Count = buf.Count
@@ -385,6 +389,7 @@ type InstanceBatch internal (backend: ISceneBackend, staging: PackBuffer, mesh: 
         member _.Count = buf.Count
         member _.AlphaBlend = alphaBlend
         member _.DoubleSided = doubleSided
+        member _.DrawBeforeLines = drawBeforeLines
 
     interface IDisposable with
         member this.Dispose() =

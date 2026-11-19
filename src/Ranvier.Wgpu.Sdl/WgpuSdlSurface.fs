@@ -354,6 +354,91 @@ module private Win32Dx12Bridge =
                 sharedD3D12Res <- opened
                 cachedNtHandle <- ntHandle
 
+        let acquireSurfaceTarget () =
+            ensureConfigured context.Width context.Height
+
+            let mutable surfTex = WGPUSurfaceTexture ()
+            wgpuSurfaceGetCurrentTexture (wgpuSurface, addrOf &surfTex)
+
+            if
+                (surfTex.Status
+                 <> WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal
+                 && surfTex.Status
+                    <> WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal)
+                || surfTex.Texture = 0n
+            then
+                if surfTex.Texture <> 0n then
+                    wgpuTextureRelease surfTex.Texture
+
+                waitFenceCpu fenceValue
+                let mutable cfg = WGPUSurfaceConfiguration ()
+                cfg.Device <- context.DeviceHandle
+                cfg.Format <- WGPUTextureFormat_RGBA8Unorm
+                cfg.Usage <- surfUsage
+                cfg.Width <- uint32 cfgWidth
+                cfg.Height <- uint32 cfgHeight
+                cfg.AlphaMode <- alphaMode
+                cfg.PresentMode <- presentMode
+                wgpuSurfaceConfigure (wgpuSurface, addrOf &cfg)
+                refreshSwapChain3 ()
+                surfTex <- WGPUSurfaceTexture ()
+                wgpuSurfaceGetCurrentTexture (wgpuSurface, addrOf &surfTex)
+
+                if surfTex.Texture = 0n then
+                    invalidOp $"wgpuSurfaceGetCurrentTexture failed with status {surfTex.Status}"
+
+            let backIdx = getBackIdxFn.Invoke swapChain3
+            let surfView = wgpuTextureCreateView (surfTex.Texture, 0n)
+
+            if surfView = 0n then
+                wgpuTextureRelease surfTex.Texture
+                invalidOp "wgpuTextureCreateView on DX12 surface texture failed"
+
+            struct (surfTex.Texture, surfView, backIdx)
+
+        let copyAndCommitBackBuffer (backIdx: uint32) =
+            // Hardware DMA copy from DX12 swapchain backbuffer[backIdx] -> NT-shared D3D11/D3D12 staging texture.
+            let backBufRes, mustReleaseBackBuf = acquireBackBuffer backIdx
+            let slot = allocSlot
+            allocSlot <- (allocSlot + 1) % copyAllocs.Length
+
+            try
+                // Only wait if this allocator slot from 2 frames ago is somehow still in flight.
+                waitFenceCpu allocFenceValues[slot]
+
+                if resetAllocFns[slot].Invoke copyAllocs[slot] < 0 then
+                    invalidOp "ID3D12CommandAllocator::Reset failed"
+
+                if resetListFn.Invoke (copyList, copyAllocs[slot], 0n) < 0 then
+                    invalidOp "ID3D12GraphicsCommandList::Reset failed"
+
+                copyResFn.Invoke (copyList, sharedD3D12Res, backBufRes)
+
+                if closeListFn.Invoke copyList < 0 then
+                    invalidOp "ID3D12GraphicsCommandList::Close failed"
+
+                let mutable listPtr = copyList
+                execListsFn.Invoke (copyQueue, 1u, &listPtr)
+
+                fenceValue <- fenceValue + 1uL
+                let targetVal = fenceValue
+
+                if signalQueueFn.Invoke (copyQueue, copyFence, targetVal) < 0 then
+                    invalidOp "ID3D12CommandQueue::Signal failed"
+
+                allocFenceValues[slot] <- targetVal
+
+                if d3d11SharedFence <> 0n then
+                    // Zero-CPU-stall GPU-timeline handoff: ID3D11DeviceContext4::Wait + CopyResource + Flush.
+                    d3dSurface.CommitSharedStagingAfterFence (d3d11SharedFence, targetVal)
+                else
+                    waitFenceCpu targetVal
+                    d3dSurface.CommitSharedStaging ()
+            finally
+                if mustReleaseBackBuf then
+                    let mutable tmp = backBufRes
+                    releaseCom &tmp
+
         static member TryCreate
             (context: WgpuContext, d3dSurface: D3D11GpuSurface, initialWidth: int, initialHeight: int)
             : Dx12SharedPresenter voption =
@@ -649,45 +734,7 @@ module private Win32Dx12Bridge =
                 ensureConfigured width height
 
         member _.RenderPass(pass: ScenePass) : FrameMetrics =
-            ensureConfigured context.Width context.Height
-
-            let mutable surfTex = WGPUSurfaceTexture ()
-            wgpuSurfaceGetCurrentTexture (wgpuSurface, addrOf &surfTex)
-
-            if
-                (surfTex.Status
-                 <> WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal
-                 && surfTex.Status
-                    <> WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal)
-                || surfTex.Texture = 0n
-            then
-                if surfTex.Texture <> 0n then
-                    wgpuTextureRelease surfTex.Texture
-
-                waitFenceCpu fenceValue
-                let mutable cfg = WGPUSurfaceConfiguration ()
-                cfg.Device <- context.DeviceHandle
-                cfg.Format <- WGPUTextureFormat_RGBA8Unorm
-                cfg.Usage <- surfUsage
-                cfg.Width <- uint32 cfgWidth
-                cfg.Height <- uint32 cfgHeight
-                cfg.AlphaMode <- alphaMode
-                cfg.PresentMode <- presentMode
-                wgpuSurfaceConfigure (wgpuSurface, addrOf &cfg)
-                refreshSwapChain3 ()
-                surfTex <- WGPUSurfaceTexture ()
-                wgpuSurfaceGetCurrentTexture (wgpuSurface, addrOf &surfTex)
-
-                if surfTex.Texture = 0n then
-                    invalidOp $"wgpuSurfaceGetCurrentTexture failed with status {surfTex.Status}"
-
-            let backIdx = getBackIdxFn.Invoke swapChain3
-
-            let surfView = wgpuTextureCreateView (surfTex.Texture, 0n)
-
-            if surfView = 0n then
-                wgpuTextureRelease surfTex.Texture
-                invalidOp "wgpuTextureCreateView on DX12 surface texture failed"
+            let struct (surfTexHandle, surfView, backIdx) = acquireSurfaceTarget ()
 
             let metrics =
                 try
@@ -702,50 +749,29 @@ module private Win32Dx12Bridge =
                     let _ = wgpuDevicePoll (context.DeviceHandle, WGPU_TRUE, 0n)
                     m
                 finally
-                    wgpuTextureRelease surfTex.Texture
+                    wgpuTextureRelease surfTexHandle
 
-            // Hardware DMA copy from DX12 swapchain backbuffer[backIdx] -> NT-shared D3D11/D3D12 staging texture.
-            let backBufRes, mustReleaseBackBuf = acquireBackBuffer backIdx
-            let slot = allocSlot
-            allocSlot <- (allocSlot + 1) % copyAllocs.Length
+            copyAndCommitBackBuffer backIdx
+            metrics
 
-            try
-                // Only wait if this allocator slot from 2 frames ago is somehow still in flight.
-                waitFenceCpu allocFenceValues[slot]
+        member _.RenderPasses(passes: ReadOnlySpan<ScenePass>, ?clearColor: RgbaColor) : FrameMetrics =
+            let struct (surfTexHandle, surfView, backIdx) = acquireSurfaceTarget ()
 
-                if resetAllocFns[slot].Invoke copyAllocs[slot] < 0 then
-                    invalidOp "ID3D12CommandAllocator::Reset failed"
+            let metrics =
+                try
+                    let m =
+                        try
+                            context.RenderGpuPasses (passes, ?clearColor = clearColor, resolveViewOverride = surfView)
+                        finally
+                            wgpuTextureViewRelease surfView
 
-                if resetListFn.Invoke (copyList, copyAllocs[slot], 0n) < 0 then
-                    invalidOp "ID3D12GraphicsCommandList::Reset failed"
+                    let _ = wgpuSurfacePresent wgpuSurface
+                    let _ = wgpuDevicePoll (context.DeviceHandle, WGPU_TRUE, 0n)
+                    m
+                finally
+                    wgpuTextureRelease surfTexHandle
 
-                copyResFn.Invoke (copyList, sharedD3D12Res, backBufRes)
-
-                if closeListFn.Invoke copyList < 0 then
-                    invalidOp "ID3D12GraphicsCommandList::Close failed"
-
-                let mutable listPtr = copyList
-                execListsFn.Invoke (copyQueue, 1u, &listPtr)
-
-                fenceValue <- fenceValue + 1uL
-                let targetVal = fenceValue
-
-                if signalQueueFn.Invoke (copyQueue, copyFence, targetVal) < 0 then
-                    invalidOp "ID3D12CommandQueue::Signal failed"
-
-                allocFenceValues[slot] <- targetVal
-
-                if d3d11SharedFence <> 0n then
-                    // Zero-CPU-stall GPU-timeline handoff: ID3D11DeviceContext4::Wait + CopyResource + Flush.
-                    d3dSurface.CommitSharedStagingAfterFence (d3d11SharedFence, targetVal)
-                else
-                    waitFenceCpu targetVal
-                    d3dSurface.CommitSharedStaging ()
-            finally
-                if mustReleaseBackBuf then
-                    let mutable tmp = backBufRes
-                    releaseCom &tmp
-
+            copyAndCommitBackBuffer backIdx
             metrics
 
         member _.Dispose() =
@@ -1006,6 +1032,34 @@ module private MacMetalBridge =
                 finally
                     objc_autoreleasePoolPop pool
 
+        let publishResolved (w: int) (h: int) =
+            let _ = wgpuDevicePoll (context.DeviceHandle, WGPU_TRUE, 0n)
+
+            let srcMtlTex = wgpuTextureGetNativeMetalTexture context.ResolveTextureHandle
+            let slot = ringIndex % ioSurfaces.Length
+            ringIndex <- ringIndex + 1
+            let dstMtlTex = mtlTextures[slot]
+            let dstIOSurf = ioSurfaces[slot]
+
+            let pool = objc_autoreleasePoolPush ()
+
+            try
+                let cmdBuf = msgSend_IntPtr (mtlQueue, selCommandBuffer)
+                let blit = msgSend_IntPtr (cmdBuf, selBlitEncoder)
+                let origin = MtlOrigin ()
+                let mutable size = MtlSize ()
+                size.Width <- unativeint w
+                size.Height <- unativeint h
+                size.Depth <- 1un
+                msgSend_CopyFromTexture (blit, selCopyTex, srcMtlTex, 0un, 0un, origin, size, dstMtlTex, 0un, 0un, origin)
+                msgSend_Void (blit, selEndEncoding)
+                msgSend_Void (cmdBuf, selCommit)
+                msgSend_Void (cmdBuf, selWaitCompleted)
+            finally
+                objc_autoreleasePoolPop pool
+
+            mtlSurface.PublishIOSurface (dstIOSurf, w, h, flipY = false)
+
         static member TryCreate
             (context: WgpuContext, mtlSurface: MetalGpuSurface, initialWidth: int, initialHeight: int)
             : MetalIOSurfacePresenter voption =
@@ -1066,32 +1120,16 @@ module private MacMetalBridge =
             ensureBuffers w h
 
             let metrics = context.RenderGpuPass pass
-            let _ = wgpuDevicePoll (context.DeviceHandle, WGPU_TRUE, 0n)
+            publishResolved w h
+            metrics
 
-            let srcMtlTex = wgpuTextureGetNativeMetalTexture context.ResolveTextureHandle
-            let slot = ringIndex % ioSurfaces.Length
-            ringIndex <- ringIndex + 1
-            let dstMtlTex = mtlTextures[slot]
-            let dstIOSurf = ioSurfaces[slot]
+        member _.RenderPasses(passes: ReadOnlySpan<ScenePass>, ?clearColor: RgbaColor) : FrameMetrics =
+            let w = context.Width
+            let h = context.Height
+            ensureBuffers w h
 
-            let pool = objc_autoreleasePoolPush ()
-
-            try
-                let cmdBuf = msgSend_IntPtr (mtlQueue, selCommandBuffer)
-                let blit = msgSend_IntPtr (cmdBuf, selBlitEncoder)
-                let origin = MtlOrigin ()
-                let mutable size = MtlSize ()
-                size.Width <- unativeint w
-                size.Height <- unativeint h
-                size.Depth <- 1un
-                msgSend_CopyFromTexture (blit, selCopyTex, srcMtlTex, 0un, 0un, origin, size, dstMtlTex, 0un, 0un, origin)
-                msgSend_Void (blit, selEndEncoding)
-                msgSend_Void (cmdBuf, selCommit)
-                msgSend_Void (cmdBuf, selWaitCompleted)
-            finally
-                objc_autoreleasePoolPop pool
-
-            mtlSurface.PublishIOSurface (dstIOSurf, w, h, flipY = false)
+            let metrics = context.RenderGpuPasses (passes, ?clearColor = clearColor)
+            publishResolved w h
             metrics
 
         member _.Dispose() =
@@ -1173,6 +1211,7 @@ type WgpuSdlSurface
                 match sectionPlane with
                 | Some s -> ValueSome s
                 | None -> ValueNone
+            Viewport = ValueNone
             Batches = batchMem
             LineBatches = lineMem
             DiscBatches = discMem
@@ -1331,6 +1370,27 @@ type WgpuSdlSurface
                 gpuSurface.PresentPixels (ReadOnlySpan<byte>(context.RgbaPixels), context.Width, context.Height)
                 metrics
 
+    /// <summary>Renders multiple `ScenePass` items sequentially and publishes the combined frame into the bound WebCore composited element.</summary>
+    member _.RenderPasses(passes: ReadOnlySpan<ScenePass>, ?clearColor: RgbaColor) : FrameMetrics =
+        checkActive ()
+
+        match dx12Bridge with
+        | ValueSome dx12 -> dx12.RenderPasses (passes, ?clearColor = clearColor)
+        | ValueNone ->
+            match metalBridge with
+            | ValueSome metal -> metal.RenderPasses (passes, ?clearColor = clearColor)
+            | ValueNone ->
+                let metrics = context.RenderPasses (passes, ?clearColor = clearColor)
+                gpuSurface.PresentPixels (ReadOnlySpan<byte>(context.RgbaPixels), context.Width, context.Height)
+                metrics
+
+    /// <summary>Renders an array of `ScenePass` items sequentially and publishes the combined frame into the bound WebCore composited element.</summary>
+    member this.RenderPasses(passes: ScenePass array, ?clearColor: RgbaColor) : FrameMetrics =
+        if isNull passes then
+            nullArg (nameof passes)
+
+        this.RenderPasses (ReadOnlySpan<ScenePass>(passes), ?clearColor = clearColor)
+
     /// <summary>Renders a 4x-MSAA 3D frame and publishes it directly into the bound WebCore composited element.</summary>
     member this.Render
         (
@@ -1385,6 +1445,10 @@ module WgpuSdlSurface =
     /// <summary>Renders `pass` and publishes it into `surface`.</summary>
     let inline render (surface: WgpuSdlSurface) (pass: ScenePass) : FrameMetrics =
         surface.Render pass
+
+    /// <summary>Renders `passes` sequentially and publishes the combined frame into `surface`.</summary>
+    let inline renderPasses (surface: WgpuSdlSurface) (passes: ScenePass array) : FrameMetrics =
+        surface.RenderPasses passes
 
     /// <summary>Resizes `surface` and its `WgpuContext` to `width` by `height` device pixels.</summary>
     let inline resize (width: int) (height: int) (surface: WgpuSdlSurface) : unit =

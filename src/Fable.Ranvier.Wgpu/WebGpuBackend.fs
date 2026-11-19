@@ -25,6 +25,7 @@ module internal WebGpuBackend =
             Line: RenderPipeline
             Disc: RenderPipeline
             DiscPick: RenderPipeline
+            Clear: RenderPipeline
             BindGroup: BindGroup
             SceneUniforms: Buffer
             UserUniforms: Buffer
@@ -55,6 +56,33 @@ module internal WebGpuBackend =
 
     // The one use of the stock shader's text in this file: a literal is copied to each place that names it.
     let private stockWgsl = Shaders.DefaultSceneWgsl
+
+    [<Literal>]
+    let private SubViewportClearWgsl =
+        """
+struct ClearVsIn {
+    @location(0) pos: vec2<f32>,
+    @location(1) color: vec4<f32>,
+};
+
+struct ClearVsOut {
+    @builtin(position) clipPos: vec4<f32>,
+    @location(0) color: vec4<f32>,
+};
+
+@vertex
+fn vs_clear(in: ClearVsIn) -> ClearVsOut {
+    var out: ClearVsOut;
+    out.clipPos = vec4<f32>(in.pos, 0.0, 1.0);
+    out.color = in.color;
+    return out;
+}
+
+@fragment
+fn fs_clear(in: ClearVsOut) -> @location(0) vec4<f32> {
+    return in.color;
+}
+"""
 
     let private attribute (format: VertexFormat) (offset: int) (location: int) : VertexAttribute =
         {|
@@ -120,6 +148,15 @@ module internal WebGpuBackend =
                         attribute VertexFormat.Uint32x2 48 3
                         attribute VertexFormat.Float32x2 56 4
                     |]
+            |}
+        |]
+
+    let private clearLayouts: VertexBufferLayout array =
+        [|
+            {|
+                arrayStride = 24
+                stepMode = StepMode.Vertex
+                attributes = [| attribute VertexFormat.Float32x2 0 0; attribute VertexFormat.Float32x4 8 1 |]
             |}
         |]
 
@@ -358,41 +395,77 @@ module internal WebGpuBackend =
             // attribute, a vertex input of the wrong type, a binding larger than the buffer behind it.
             device.pushErrorScope "validation"
 
-            let resources =
-                {
-                    OpaqueCull = scene shader "fs_main" format 4 true false true
-                    OpaqueDouble = scene shader "fs_main" format 4 false false true
-                    BlendCull = scene shader "fs_main" format 4 true true false
-                    BlendDouble = scene shader "fs_main" format 4 false true false
-                    PickCull = scene pickShader "fs_pick" TextureFormat.Rgba32Uint 1 true false true
-                    PickDouble = scene pickShader "fs_pick" TextureFormat.Rgba32Uint 1 false false true
-                    Line =
-                        pipeline
-                            device
-                            layout
-                            lineShader
-                            "vs_line"
-                            "fs_line"
-                            lineLayouts
-                            Topology.LineList
-                            CullMode.None
-                            format
-                            4
-                            true
-                            false
-                            CompareFunction.LessEqual
-                    Disc = disc discShader "fs_disc" format 4 true false
-                    DiscPick = disc discPickShader "fs_disc_pick" TextureFormat.Rgba32Uint 1 false true
-                    BindGroup = bindGroup
-                    SceneUniforms = sceneUniforms
-                    UserUniforms = userUniforms
-                }
+            let opaqueCull = scene shader "fs_main" format 4 true false true
+            let opaqueDouble = scene shader "fs_main" format 4 false false true
+            let blendCull = scene shader "fs_main" format 4 true true false
+            let blendDouble = scene shader "fs_main" format 4 false true false
+            let pickCull = scene pickShader "fs_pick" TextureFormat.Rgba32Uint 1 true false true
+
+            let pickDouble =
+                scene pickShader "fs_pick" TextureFormat.Rgba32Uint 1 false false true
+
+            let linePipe =
+                pipeline
+                    device
+                    layout
+                    lineShader
+                    "vs_line"
+                    "fs_line"
+                    lineLayouts
+                    Topology.LineList
+                    CullMode.None
+                    format
+                    4
+                    true
+                    false
+                    CompareFunction.LessEqual
+
+            let discPipe = disc discShader "fs_disc" format 4 true false
+
+            let discPickPipe =
+                disc discPickShader "fs_disc_pick" TextureFormat.Rgba32Uint 1 false true
+
+            let clearShader = device.createShaderModule {| code = SubViewportClearWgsl |}
+            let clearLayout = device.createPipelineLayout {| bindGroupLayouts = [||] |}
+
+            let clearPipe =
+                pipeline
+                    device
+                    clearLayout
+                    clearShader
+                    "vs_clear"
+                    "fs_clear"
+                    clearLayouts
+                    Topology.TriangleList
+                    CullMode.None
+                    format
+                    4
+                    false
+                    false
+                    CompareFunction.Always
 
             let! pipelineError = device.popErrorScope ()
 
             match pipelineError with
             | Some error -> raise (WgslException $"WGSL does not fit the scene pipelines. {error.message}")
             | None -> ()
+
+            let resources =
+                {
+                    OpaqueCull = opaqueCull
+                    OpaqueDouble = opaqueDouble
+                    BlendCull = blendCull
+                    BlendDouble = blendDouble
+                    PickCull = pickCull
+                    PickDouble = pickDouble
+                    Line = linePipe
+                    Disc = discPipe
+                    DiscPick = discPickPipe
+                    Clear = clearPipe
+                    BindGroup = bindGroup
+                    SceneUniforms = sceneUniforms
+                    UserUniforms = userUniforms
+                }
 
             return resources
         }
@@ -425,13 +498,14 @@ module internal WebGpuBackend =
         }
 
     /// <summary>
-    /// Draws the batches of one blend mode. Returns the pipeline left set on the pass, so the caller sets a
-    /// pipeline only when it changes.
+    /// Draws the batches of one blend mode and backdrop-ordering slot. Returns the pipeline left set on the pass,
+    /// so the caller sets a pipeline only when it changes.
     /// </summary>
     let private drawBatches<'Batch when 'Batch :> IInstanceDraw>
         (pass: RenderPass)
         (batches: ReadOnlySpan<'Batch>)
         (alphaBlend: bool)
+        (wantBeforeLines: bool)
         (cullPipeline: RenderPipeline)
         (doublePipeline: RenderPipeline)
         (current: RenderPipeline)
@@ -447,6 +521,8 @@ module internal WebGpuBackend =
 
             if
                 batch.AlphaBlend = alphaBlend
+                && (not alphaBlend
+                    || batch.DrawBeforeLines = wantBeforeLines)
                 && count > 0
                 && indexCount > 0
             then
@@ -509,6 +585,32 @@ module internal WebGpuBackend =
 
         // Fixed 256-byte staging buffer for the 1x1 pick readback.
         let pickBuffer = device.createBuffer {| size = 256; usage = ReadbackUsage |}
+        // 6-vertex NDC quad for clearing only a pass's ViewportRect while keeping LoadOp.Load on MSAA color.
+        let clearQuadBuffer = device.createBuffer {| size = 144; usage = VertexUsage |}
+        let clearQuadData = JS.Constructors.Float32Array.Create 36
+
+        let writeClearQuad (color: RgbaColor) =
+            let ca = float32 (Math.Clamp (color.A, 0.0f, 1.0f))
+            let r = color.R * ca
+            let g = color.G * ca
+            let b = color.B * ca
+
+            let writeVert idx x y =
+                let o = idx * 6
+                clearQuadData[o] <- x
+                clearQuadData[o + 1] <- y
+                clearQuadData[o + 2] <- r
+                clearQuadData[o + 3] <- g
+                clearQuadData[o + 4] <- b
+                clearQuadData[o + 5] <- ca
+
+            writeVert 0 -1.0f -1.0f
+            writeVert 1 1.0f -1.0f
+            writeVert 2 1.0f 1.0f
+            writeVert 3 -1.0f -1.0f
+            writeVert 4 1.0f 1.0f
+            writeVert 5 -1.0f 1.0f
+            queue.writeBuffer (clearQuadBuffer, 0, clearQuadData, 0, 36)
 
         let createTarget (format: TextureFormat) (sampleCount: int) (usage: int) =
             device.createTexture
@@ -594,66 +696,102 @@ module internal WebGpuBackend =
             member _.WriteUserUniforms(data, firstSlot, slotCount) =
                 queue.writeBuffer (resources.UserUniforms, firstSlot * 16, data, firstSlot * 4, slotCount * 4)
 
-            member _.DrawPass(clear, batches, lines, discs, counters) =
-                let alpha = float (Math.Clamp (clear.A, 0.0f, 1.0f))
-                clearValue.r <- float clear.R * alpha
-                clearValue.g <- float clear.G * alpha
-                clearValue.b <- float clear.B * alpha
-                clearValue.a <- alpha
-                colorAttachment.resolveTarget <- Some (surface.getCurrentTexture().createView())
+            member _.DrawPass(isFirst, isLast, fullClear, subClear, viewport, batches, lines, discs, counters) =
+                if isFirst then
+                    let clear =
+                        fullClear
+                        |> ValueOption.defaultValue RgbaColor.darkBackdrop
+
+                    let alpha = float (Math.Clamp (clear.A, 0.0f, 1.0f))
+                    clearValue.r <- float clear.R * alpha
+                    clearValue.g <- float clear.G * alpha
+                    clearValue.b <- float clear.B * alpha
+                    clearValue.a <- alpha
+                    colorAttachment.loadOp <- LoadOp.Clear
+                else
+                    colorAttachment.loadOp <- LoadOp.Load
+
+                colorAttachment.resolveTarget <-
+                    if isLast then
+                        Some (surface.getCurrentTexture().createView())
+                    else
+                        None
+
+                match viewport, subClear with
+                | ValueSome _, ValueSome sc -> writeClearQuad sc
+                | _ -> ()
 
                 let encoder = device.createCommandEncoder ()
                 let pass = encoder.beginRenderPass passDescriptor
-                pass.setBindGroup (0, resources.BindGroup)
-                counters.DrawCalls <- 0
-                counters.Instances <- 0
-                counters.Triangles <- 0
 
-                let batchSpan = batches.Span
-                let lineSpan = lines.Span
-                let discSpan = discs.Span
-                let linePipeline = resources.Line
-                let discPipeline = resources.Disc
+                match viewport with
+                | ValueNone -> ()
+                | ValueSome vp ->
+                    pass.setViewport (float vp.X, float vp.Y, float vp.Width, float vp.Height, 0.0, 1.0)
+                    pass.setScissorRect (vp.X, vp.Y, vp.Width, vp.Height)
 
-                let mutable last =
-                    drawBatches pass batchSpan false resources.OpaqueCull resources.OpaqueDouble null counters
+                    let mutable last: RenderPipeline = null
 
-                for i = 0 to lineSpan.Length - 1 do
-                    let line = lineSpan[i] :> ILineDraw
-                    let vertexCount = line.VertexCount
+                    if subClear.IsSome then
+                        pass.setPipeline resources.Clear
+                        pass.setVertexBuffer (0, clearQuadBuffer, 0, 144)
+                        pass.draw (6, 1)
+                        last <- resources.Clear
 
-                    if vertexCount >= 2 then
-                        if not (obj.ReferenceEquals (last, linePipeline)) then
-                            pass.setPipeline linePipeline
-                            last <- linePipeline
+                    pass.setBindGroup (0, resources.BindGroup)
 
-                        pass.setVertexBuffer (0, unbox line.VertexBuffer, 0, line.ActiveBytes)
-                        pass.draw (vertexCount, 1)
-                        counters.DrawCalls <- counters.DrawCalls + 1
+                    let batchSpan = batches.Span
+                    let lineSpan = lines.Span
+                    let discSpan = discs.Span
+                    let linePipeline = resources.Line
+                    let discPipeline = resources.Disc
 
-                last <- drawBatches pass batchSpan true resources.BlendCull resources.BlendDouble last counters
+                    // 1. Opaque meshes
+                    last <- drawBatches pass batchSpan false false resources.OpaqueCull resources.OpaqueDouble last counters
 
-                for i = 0 to discSpan.Length - 1 do
-                    let disc = discSpan[i] :> IDiscDraw
-                    let count = disc.Count
+                    // 2. AlphaBlend backdrop batches drawn before hairlines
+                    last <- drawBatches pass batchSpan true true resources.BlendCull resources.BlendDouble last counters
 
-                    if count > 0 then
-                        if not (obj.ReferenceEquals (last, discPipeline)) then
-                            pass.setPipeline discPipeline
-                            last <- discPipeline
+                    // 3. 3D hairlines
+                    for i = 0 to lineSpan.Length - 1 do
+                        let line = lineSpan[i] :> ILineDraw
+                        let vertexCount = line.VertexCount
 
-                        pass.setVertexBuffer (0, unbox disc.InstanceBuffer, 0, disc.ActiveBytes)
-                        pass.draw (6, count)
-                        counters.DrawCalls <- counters.DrawCalls + 1
-                        counters.Instances <- counters.Instances + count
-                        counters.Triangles <- counters.Triangles + count * 2
+                        if vertexCount >= 2 then
+                            if not (obj.ReferenceEquals (last, linePipeline)) then
+                                pass.setPipeline linePipeline
+                                last <- linePipeline
+
+                            pass.setVertexBuffer (0, unbox line.VertexBuffer, 0, line.ActiveBytes)
+                            pass.draw (vertexCount, 1)
+                            counters.DrawCalls <- counters.DrawCalls + 1
+
+                    // 4. Standard AlphaBlend batches drawn after hairlines
+                    last <- drawBatches pass batchSpan true false resources.BlendCull resources.BlendDouble last counters
+
+                    // 5. Camera-facing SDF discs
+                    for i = 0 to discSpan.Length - 1 do
+                        let disc = discSpan[i] :> IDiscDraw
+                        let count = disc.Count
+
+                        if count > 0 then
+                            if not (obj.ReferenceEquals (last, discPipeline)) then
+                                pass.setPipeline discPipeline
+                                last <- discPipeline
+
+                            pass.setVertexBuffer (0, unbox disc.InstanceBuffer, 0, disc.ActiveBytes)
+                            pass.draw (6, count)
+                            counters.DrawCalls <- counters.DrawCalls + 1
+                            counters.Instances <- counters.Instances + count
+                            counters.Triangles <- counters.Triangles + count * 2
 
                 pass.``end`` ()
                 submit encoder
 
-            member _.PickAsync(px, py, batches, discs) =
+            member _.PickAsync(px, py, vp, batches, discs) =
                 let encoder = device.createCommandEncoder ()
                 let pass = encoder.beginRenderPass pickDescriptor
+                pass.setViewport (float vp.X, float vp.Y, float vp.Width, float vp.Height, 0.0, 1.0)
                 pass.setScissorRect (px, py, 1, 1)
                 pass.setBindGroup (0, resources.BindGroup)
 
@@ -810,6 +948,7 @@ module internal WebGpuBackend =
             member _.Dispose() =
                 destroyTargets ()
                 pickBuffer.destroy ()
+                clearQuadBuffer.destroy ()
                 resources.SceneUniforms.destroy ()
                 resources.UserUniforms.destroy ()
                 surface.unconfigure ()

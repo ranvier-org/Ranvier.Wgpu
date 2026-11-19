@@ -247,6 +247,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) isFront: bool) -> @location(0) vec4
         lit = mix(lit, u.sectionStyle.xyz, edgeT * 0.88);
     }
 
+    let exactColor = (flags & 8u) != 0u;
+    if (exactColor) {
+        return vec4<f32>(clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)) * alpha, alpha);
+    }
+
     let mapped = lit / (lit + vec3<f32>(0.86));
     let gamma = pow(clamp(mapped * 1.36, vec3<f32>(0.0), vec3<f32>(1.0)), vec3<f32>(1.0 / 2.15));
     return vec4<f32>(gamma * alpha, alpha);
@@ -256,6 +261,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) isFront: bool) -> @location(0) vec4
 fn fs_pick(in: VsOut) -> @location(0) vec4<u32> {
     let pickId = in.pickFlags.x;
     if (pickId == 0u) {
+        discard;
+    }
+    if (clamp(in.opacityEmissive.x, 0.0, 1.0) <= 0.002) {
         discard;
     }
     let flags = in.pickFlags.y;
@@ -480,6 +488,9 @@ fn fs_disc_pick(in: DiscVsOut) -> @location(0) vec4<u32> {
         discard;
     }
     let flags = in.pickFlags.y;
+    if (in.fillColor.a <= 0.005 && (flags & 2u) == 0u) {
+        discard;
+    }
     let ignoreClip = (flags & 4u) != 0u;
     let sectionActive = (!ignoreClip) && (length(u.clipPlane.xyz) > 0.5);
     if (sectionActive && (dot(in.worldPos, u.clipPlane.xyz) + u.clipPlane.w) < 0.0) {

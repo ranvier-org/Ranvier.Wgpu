@@ -36,6 +36,64 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
         if disposed then
             raise (ObjectDisposedException (nameof WgpuContext))
 
+    let resolveViewport (ctxW: int) (ctxH: int) (vpOpt: ViewportRect voption) : ViewportRect voption =
+        if ctxW <= 0 || ctxH <= 0 then
+            ValueNone
+        else
+            match vpOpt with
+            | ValueNone ->
+                ValueSome
+                    {
+                        X = 0
+                        Y = 0
+                        Width = ctxW
+                        Height = ctxH
+                    }
+            | ValueSome vp ->
+                let x0 = max 0 vp.X
+                let y0 = max 0 vp.Y
+                let x1 = int (min (int64 ctxW) (int64 vp.X + int64 vp.Width))
+                let y1 = int (min (int64 ctxH) (int64 vp.Y + int64 vp.Height))
+                let w = x1 - x0
+                let h = y1 - y0
+
+                if w <= 0 || h <= 0 then
+                    ValueNone
+                else
+                    ValueSome
+                        {
+                            X = x0
+                            Y = y0
+                            Width = w
+                            Height = h
+                        }
+
+    let drawScenePass
+        (isFirst: bool)
+        (isLast: bool)
+        (fullClear: RgbaColor voption)
+        (subClear: RgbaColor voption)
+        (vpOpt: ViewportRect voption)
+        (scene: ScenePass)
+        =
+        match vpOpt with
+        | ValueSome vp ->
+            let rig =
+                match scene.Lighting with
+                | ValueSome l -> l
+                | ValueNone -> LightingRig.studioDefault
+
+            let clip =
+                match scene.SectionPlane with
+                | ValueSome s -> s
+                | ValueNone -> SectionPlane.disabled
+
+            Packing.sceneUniforms sceneUniforms vp.Width vp.Height scene.Camera rig clip
+            backend.WriteSceneUniforms sceneUniforms
+        | ValueNone -> ()
+
+        backend.DrawPass (isFirst, isLast, fullClear, subClear, vpOpt, scene.Batches, scene.LineBatches, scene.DiscBatches, counters)
+
     // `None` is the stock shader, which has every entry point.
     static let planOf (customWgsl: string option) : SceneEntryPlan option =
         match customWgsl with
@@ -126,6 +184,7 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
                 match sectionPlane with
                 | Some s -> ValueSome s
                 | None -> ValueNone
+            Viewport = ValueNone
             Batches =
                 match batches with
                 | :? (InstanceBatch array) as arr -> ReadOnlyMemory<InstanceBatch>(arr)
@@ -257,8 +316,28 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
         new MeshHandle (backend, staging, mesh)
 
     /// <summary>Creates a dynamic hardware-instanced draw batch bound to `mesh`.</summary>
-    member _.CreateBatch(mesh: MeshHandle, ?blendMode: BlendMode, ?doubleSided: bool) : InstanceBatch =
-        new InstanceBatch (backend, staging, mesh, defaultArg blendMode BlendMode.Opaque, defaultArg doubleSided false)
+    member _.CreateBatch(mesh: MeshHandle, ?blendMode: BlendMode, ?doubleSided: bool, ?drawBeforeLines: bool) : InstanceBatch =
+        new InstanceBatch (
+            backend,
+            staging,
+            mesh,
+            defaultArg blendMode BlendMode.Opaque,
+            defaultArg doubleSided false,
+            defaultArg drawBeforeLines false
+        )
+
+    /// <summary>Creates a hardware-instanced batch bound to `mesh` and populates it with one initial instance.</summary>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
+    member this.CreateSingleBatch
+        (mesh: MeshHandle, ?blendMode: BlendMode, ?doubleSided: bool, ?drawBeforeLines: bool, ?instance: Instance3D)
+        : InstanceBatch =
+        checkLive ()
+
+        let batch =
+            this.CreateBatch (mesh, ?blendMode = blendMode, ?doubleSided = doubleSided, ?drawBeforeLines = drawBeforeLines)
+
+        batch.SetSingle (defaultArg instance (Instance3D.identity RgbaColor.white 0.30f 0u InstanceFlags.None))
+        batch
 
     /// <summary>Creates a dynamic 4x-MSAA 3D hairline batch.</summary>
     member _.CreateLineBatch() : LineBatch =
@@ -318,26 +397,18 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
     member _.Render(pass: ScenePass) : FrameMetrics =
         checkLive ()
         renderCalls <- renderCalls + 1
+        counters.DrawCalls <- 0
+        counters.Instances <- 0
+        counters.Triangles <- 0
 
         let clear =
             match pass.ClearColor with
             | ValueSome c -> c
             | ValueNone -> RgbaColor.darkBackdrop
 
-        let rig =
-            match pass.Lighting with
-            | ValueSome l -> l
-            | ValueNone -> LightingRig.studioDefault
-
-        let clip =
-            match pass.SectionPlane with
-            | ValueSome s -> s
-            | ValueNone -> SectionPlane.disabled
-
+        let vpOpt = resolveViewport curWidth curHeight pass.Viewport
         let t0 = Clock.now ()
-        Packing.sceneUniforms sceneUniforms curWidth curHeight pass.Camera rig clip
-        backend.WriteSceneUniforms sceneUniforms
-        backend.DrawPass (clear, pass.Batches, pass.LineBatches, pass.DiscBatches, counters)
+        drawScenePass true true (ValueSome clear) ValueNone vpOpt pass
         let t1 = Clock.now ()
         framesDelivered <- framesDelivered + 1
 
@@ -348,6 +419,83 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
             InstanceCount = counters.Instances
             TriangleCount = counters.Triangles
         }
+
+    /// <summary>Draws multiple `ScenePass` items sequentially into the canvas.</summary>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
+    member _.RenderPasses(passes: ReadOnlySpan<ScenePass>, ?clearColor: RgbaColor) : FrameMetrics =
+        checkLive ()
+        renderCalls <- renderCalls + max 1 passes.Length
+        counters.DrawCalls <- 0
+        counters.Instances <- 0
+        counters.Triangles <- 0
+        let t0 = Clock.now ()
+
+        if passes.Length = 0 then
+            let clear = defaultArg clearColor RgbaColor.darkBackdrop
+
+            backend.DrawPass (
+                true,
+                true,
+                ValueSome clear,
+                ValueNone,
+                ValueNone,
+                ReadOnlyMemory.Empty,
+                ReadOnlyMemory.Empty,
+                ReadOnlyMemory.Empty,
+                counters
+            )
+        else
+            let outerClear =
+                match clearColor with
+                | Some c -> c
+                | None ->
+                    passes[0].ClearColor
+                    |> ValueOption.defaultValue RgbaColor.darkBackdrop
+
+            for k = 0 to passes.Length - 1 do
+                let scene = passes[k]
+                let vpOpt = resolveViewport curWidth curHeight scene.Viewport
+                let isFirst = (k = 0)
+                let isLast = (k = passes.Length - 1)
+
+                if isFirst || isLast || vpOpt.IsSome then
+                    let fullClear = if isFirst then ValueSome outerClear else ValueNone
+
+                    let subClear =
+                        match vpOpt with
+                        | ValueNone -> ValueNone
+                        | ValueSome _ when isFirst ->
+                            if
+                                clearColor.IsSome
+                                && scene.ClearColor.IsSome
+                                && scene.Viewport.IsSome
+                            then
+                                scene.ClearColor
+                            else
+                                ValueNone
+                        | ValueSome _ -> scene.ClearColor
+
+                    drawScenePass isFirst isLast fullClear subClear vpOpt scene
+
+        let t1 = Clock.now ()
+        framesDelivered <- framesDelivered + 1
+
+        {
+            GpuRenderMs = t1 - t0
+            ReadbackMs = 0.0
+            DrawCalls = counters.DrawCalls
+            InstanceCount = counters.Instances
+            TriangleCount = counters.Triangles
+        }
+
+    /// <summary>Draws an array of `ScenePass` items sequentially into the canvas.</summary>
+    /// <exception cref="T:System.ArgumentNullException">`passes` is null.</exception>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
+    member this.RenderPasses(passes: ScenePass array, ?clearColor: RgbaColor) : FrameMetrics =
+        if isNull passes then
+            nullArg (nameof passes)
+
+        this.RenderPasses (ReadOnlySpan<ScenePass>(passes), ?clearColor = clearColor)
 
     /// <summary>Draws `camera` and `batches` with optional scene settings into the canvas.</summary>
     member this.Render
@@ -389,6 +537,39 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
     member _.PickAsync(px: int, py: int, scene: ScenePass) : JS.Promise<PickHit voption> =
         checkLive ()
 
+        let outsideViewport =
+            match scene.Viewport with
+            | ValueSome vp -> not (vp.Contains (px, py))
+            | ValueNone -> false
+
+        if
+            px < 0
+            || px >= curWidth
+            || py < 0
+            || py >= curHeight
+            || outsideViewport
+        then
+            JS.Constructors.Promise.resolve ValueNone
+        else
+            match resolveViewport curWidth curHeight scene.Viewport with
+            | ValueNone -> JS.Constructors.Promise.resolve ValueNone
+            | ValueSome activeVp ->
+                let clip =
+                    match scene.SectionPlane with
+                    | ValueSome s -> s
+                    | ValueNone -> SectionPlane.disabled
+
+                Packing.sceneUniforms sceneUniforms activeVp.Width activeVp.Height scene.Camera LightingRig.studioDefault clip
+                backend.WriteSceneUniforms sceneUniforms
+                backend.PickAsync (px, py, activeVp, scene.Batches, scene.DiscBatches)
+
+    /// <summary>
+    /// Picks at pixel `(px, py)` against the topmost `ScenePass` in `passes` whose viewport contains `(px, py)`.
+    /// </summary>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
+    member this.PickPassesAsync(px: int, py: int, passes: ReadOnlySpan<ScenePass>) : JS.Promise<PickHit voption> =
+        checkLive ()
+
         if
             px < 0
             || px >= curWidth
@@ -397,14 +578,36 @@ type WgpuContext private (backend: ISceneBackend, staging: PackBuffer, initialWi
         then
             JS.Constructors.Promise.resolve ValueNone
         else
-            let clip =
-                match scene.SectionPlane with
-                | ValueSome s -> s
-                | ValueNone -> SectionPlane.disabled
+            let mutable i = passes.Length - 1
+            let mutable selected: JS.Promise<PickHit voption> voption = ValueNone
 
-            Packing.sceneUniforms sceneUniforms curWidth curHeight scene.Camera LightingRig.studioDefault clip
-            backend.WriteSceneUniforms sceneUniforms
-            backend.PickAsync (px, py, scene.Batches, scene.DiscBatches)
+            while i >= 0 && selected.IsNone do
+                let p = passes[i]
+
+                let contains =
+                    match p.Viewport with
+                    | ValueSome vp -> vp.Contains (px, py)
+                    | ValueNone -> true
+
+                if contains then
+                    selected <- ValueSome (this.PickAsync (px, py, p))
+                else
+                    i <- i - 1
+
+            match selected with
+            | ValueSome promise -> promise
+            | ValueNone -> JS.Constructors.Promise.resolve ValueNone
+
+    /// <summary>
+    /// Picks at pixel `(px, py)` against the topmost `ScenePass` in `passes` whose viewport contains `(px, py)`.
+    /// </summary>
+    /// <exception cref="T:System.ArgumentNullException">`passes` is null.</exception>
+    /// <exception cref="T:System.ObjectDisposedException">The context is disposed.</exception>
+    member this.PickPassesAsync(px: int, py: int, passes: ScenePass array) : JS.Promise<PickHit voption> =
+        if isNull passes then
+            nullArg (nameof passes)
+
+        this.PickPassesAsync (px, py, ReadOnlySpan<ScenePass>(passes))
 
     /// <summary>
     /// Destroys the pipelines, buffers and targets, and on WebGPU the device. The canvas can then take another
@@ -437,6 +640,10 @@ module WgpuContext =
     let inline createBatch (blendMode: BlendMode) (doubleSided: bool) (mesh: MeshHandle) (context: WgpuContext) : InstanceBatch =
         context.CreateBatch (mesh, blendMode, doubleSided)
 
+    /// <summary>Creates an opaque single-sided `InstanceBatch` populated with `instance` for `mesh` on `context`.</summary>
+    let inline createSingleBatch (instance: Instance3D) (mesh: MeshHandle) (context: WgpuContext) : InstanceBatch =
+        context.CreateSingleBatch (mesh, instance = instance)
+
     /// <summary>Creates a 4x-MSAA `LineBatch` on `context`.</summary>
     let inline createLineBatch (context: WgpuContext) : LineBatch =
         context.CreateLineBatch ()
@@ -461,9 +668,19 @@ module WgpuContext =
     let inline render (context: WgpuContext) (pass: ScenePass) : FrameMetrics =
         context.Render pass
 
+    /// <summary>Draws `passes` sequentially on `context` into its canvas.</summary>
+    let inline renderPasses (context: WgpuContext) (passes: ScenePass array) : FrameMetrics =
+        context.RenderPasses passes
+
     /// <summary>Executes 1x1 GPU picking at `(px, py)` for `pass` on `context`.</summary>
     let inline pickAsync (px: int) (py: int) (context: WgpuContext) (pass: ScenePass) : JS.Promise<PickHit voption> =
         context.PickAsync (px, py, pass)
+
+    /// <summary>
+    /// Executes 1x1 GPU picking at `(px, py)` against the topmost pass in `passes` containing `(px, py)` on `context`.
+    /// </summary>
+    let inline pickPassesAsync (px: int) (py: int) (context: WgpuContext) (passes: ScenePass array) : JS.Promise<PickHit voption> =
+        context.PickPassesAsync (px, py, passes)
 
     /// <summary>Resizes `context` to `width` by `height` device pixels.</summary>
     let inline resize (width: int) (height: int) (context: WgpuContext) : unit =

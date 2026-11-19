@@ -403,6 +403,79 @@ for (const backend of BACKENDS) {
     assert.ok(result.exemptRgbaBlue > 120, `exempt RgbaColor line blue: ${result.exemptRgbaBlue}`);
     assert.ok(result.exemptVec4Cyan > 120, `exempt Vector4 line cyan: ${result.exemptVec4Cyan}`);
   });
+
+  test(`[${backend}] alpha-zero mesh and disc occluders do not block PickAsync of opaque targets behind them`, async () => {
+    const result = await run("alphaZeroPick", backend);
+    assert.equal(result.backend, backend);
+    assert.equal(result.meshPickId, 42, `expected opaque mesh behind alpha=0 mesh: got ${result.meshPickId}`);
+    assert.equal(result.discPickId, 42, `expected opaque disc behind alpha=0 disc: got ${result.discPickId}`);
+  });
+
+  test(`[${backend}] InstanceFlags.ExactColor emits exact [0, 255, 0, 255] while InstanceFlags.Unlit keeps [0, 220, 0, 255]`, async () => {
+    const result = await run("exactColorCheck", backend);
+    assert.equal(result.backend, backend);
+    assert.deepEqual([...result.flags], [0, 1, 2, 4, 8, 16]);
+    near(result.exactGreen, [0, 255, 0, 255], 1, "ExactColor pure green");
+    near(result.exactMid, [51, 102, 204, 255], 1, "ExactColor mid-tone");
+    near(result.unlitGreen, [0, 220, 0, 255], 2, "Unlit tone-mapped green");
+  });
+
+  test(`[${backend}] DrawBeforeLines renders backdrop AlphaBlend panel before LineBatch hairlines`, async () => {
+    const result = await run("drawBeforeLinesCheck", backend);
+    assert.equal(result.backend, backend);
+    assert.deepEqual([...result.flags], [false, true, false]);
+    assert.ok(result.redWithBefore > 100, `white line after backdrop stays bright (${result.redWithBefore})`);
+    assert.ok(result.redWithAfter < 80, `translucent panel after line dims white line (${result.redWithAfter})`);
+    assert.ok(result.redWithBefore > result.redWithAfter, `drawBeforeLines=true (${result.redWithBefore}) > false (${result.redWithAfter})`);
+  });
+
+  test(`[${backend}] CreateSingleBatch renders and picks immediately without manual UpdateInstances`, async () => {
+    const result = await run("createSingleBatchCheck", backend);
+    assert.equal(result.backend, backend);
+    assert.equal(result.defaultCount, 1);
+    assert.equal(result.customCount, 1);
+    near(result.centre, [0, 255, 0, 255], 1, "CreateSingleBatch green centre");
+    assert.equal(result.pickId, 77);
+  });
+
+  test(`[${backend}] RenderPasses, PickPassesAsync, and ViewportRect isolate viewports, clear vs preserve color, and scale discs`, async () => {
+    const result = await run("viewportRenderPassesCheck", backend);
+    assert.equal(result.backend, backend);
+    assert.equal(result.splitDrawCalls, 2);
+    assert.equal(result.splitInstances, 2);
+    assert.equal(result.renderCallsDelta, 2);
+    assert.equal(result.framesDelta, 1);
+    near(result.leftBg, [102, 0, 0, 255], 2, "left clear");
+    near(result.leftObj, [0, 255, 0, 255], 1, "left green box");
+    near(result.rightBg, [0, 0, 102, 255], 2, "right clear");
+    near(result.rightObj, [255, 255, 0, 255], 1, "right yellow box");
+    assert.equal(result.leftOutPickId, 0);
+    assert.equal(result.rightOutPickId, 0);
+    assert.equal(result.pickLeftId, 101);
+    assert.equal(result.pickRightId, 202);
+    assert.equal(result.pickOutsideId, 0);
+    // Disc in 160x100 sub-viewport keeps symmetric 10px radius
+    assert.ok(result.discRight7[1] > 200, `disc covers +7px X (${result.discRight7})`);
+    assert.ok(result.discDown7[1] > 200, `disc covers +7px Y (${result.discDown7})`);
+    assert.ok(result.discDown15[1] < 20, `disc excludes +15px Y (${result.discDown15})`);
+    // Overlapping ClearColor = ValueSome clears only overlayVp while keeping outer backdrop
+    near(result.overlapOuter, [102, 0, 0, 255], 2, "outer backdrop preserved");
+    near(result.overlapClearCorner, [0, 0, 102, 255], 2, "overlayVp cleared to rightClear");
+    near(result.overlapClearCenter, [255, 255, 0, 255], 1, "overlayVp box drawn on top");
+    assert.equal(result.overlapClearPickCenterId, 202);
+    assert.equal(result.overlapClearPickCornerId, 0);
+    // Overlapping ClearColor = ValueNone preserves pass 0 color in overlayVp while clearing depth
+    near(result.overlapPreserveCorner, [0, 255, 0, 255], 1, "overlayVp ClearColor=None preserves pass 0 green box color");
+    near(result.overlapPreserveCenter, [0, 255, 255, 255], 1, "overlayVp ClearColor=None clears depth so deeper cyan box draws");
+    assert.equal(result.overlapPreservePickId, 303);
+    // Bounds & empty passes & guards
+    assert.equal(result.clippedDraws, 2);
+    assert.equal(result.offscreenDraws, 0);
+    assert.equal(result.emptyDraws, 0);
+    near(result.emptyPixel, [0, 102, 0, 255], 2, "empty RenderPasses clears to explicit clearColor");
+    assert.equal(result.nullPassesThrows, true);
+    assert.equal(result.disposedThrows, true);
+  });
 }
 
 test("the WebGL2 frame and picks of the fixed scene equal the WebGPU ones", async () => {

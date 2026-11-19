@@ -80,8 +80,9 @@ not draw the stock shader. A page that should run on both backends passes both.
 
 ## Current limits
 
-- The limits of `Ranvier.Wgpu` apply: no textures, lines are a one-pixel line list, and discs and blended
-  batches are not depth-sorted.
+- The limits of `Ranvier.Wgpu` apply: no textures, lines are a one-pixel line list, discs and blended batches are
+  not depth-sorted, and pass draw order is five stages (`Opaque`, `AlphaBlend` with `DrawBeforeLines = true`,
+  `LineBatch`, `AlphaBlend` with `DrawBeforeLines = false`, `DiscBatch`).
 - Tested in Chrome on Windows. Firefox, Safari, Linux and macOS are not tested.
 - On WebGL2 through Direct3D 11, two frames of an unchanged scene can differ by one step of 255 in a few pixels
   where a line lies under a blended mesh.

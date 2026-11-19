@@ -338,7 +338,7 @@ type MeshHandle internal (device: nativeint, queue: nativeint, mesh: MeshData) =
 /// Supports updating `Instance3D` transforms dynamically without recreating mesh geometry.
 /// </summary>
 [<Sealed>]
-type InstanceBatch internal (device: nativeint, queue: nativeint, mesh: MeshHandle, blendMode: BlendMode, doubleSided: bool) =
+type InstanceBatch internal (device: nativeint, queue: nativeint, mesh: MeshHandle, blendMode: BlendMode, doubleSided: bool, drawBeforeLines: bool) =
     let buf = DynamicBatchBuffer<Instance3D>(device, queue, 16, 1, nameof InstanceBatch)
 
     /// <summary>Mesh geometry instanced by this batch.</summary>
@@ -349,6 +349,9 @@ type InstanceBatch internal (device: nativeint, queue: nativeint, mesh: MeshHand
 
     /// <summary>True when back-face culling is disabled for this batch.</summary>
     member _.DoubleSided = doubleSided
+
+    /// <summary>True when this `AlphaBlend` batch renders before `LineBatch` hairlines instead of after them.</summary>
+    member _.DrawBeforeLines = drawBeforeLines
 
     /// <summary>Active instance count uploaded to the GPU.</summary>
     member _.Count = buf.Count

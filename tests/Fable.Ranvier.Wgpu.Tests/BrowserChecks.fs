@@ -1375,3 +1375,468 @@ let lineSectionPlane (canvas: obj) (backend: string) =
         ctx.Dispose ()
         return result
     }
+
+/// <summary>
+/// Verifies that transparent <c>alpha = 0</c> mesh and unselected disc occluders do not block <c>PickAsync</c>
+/// of opaque targets behind them on both WebGPU and WebGL2.
+/// </summary>
+let alphaZeroPick (canvas: obj) (backend: string) =
+    jsAsync {
+        let! ctx = WgpuContext.CreateAsync (canvas, 64, 64, backend = backendOf backend)
+        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+        let boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+        let opaqueMeshBatch = ctx.CreateBatch boxMesh
+        let invisibleMeshBatch = ctx.CreateBatch (boxMesh, BlendMode.AlphaBlend, true)
+
+        opaqueMeshBatch.SetSingle (
+            Instance3D.trs Vector3.Zero 0.0f (Vector3 (1.5f, 1.5f, 0.2f)) (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f)) 0.5f 42u InstanceFlags.Unlit
+        )
+
+        invisibleMeshBatch.SetSingle (
+            Instance3D.trs
+                (Vector3 (0.0f, 0.0f, 1.0f))
+                0.0f
+                (Vector3 (1.5f, 1.5f, 0.2f))
+                (RgbaColor (1.0f, 0.0f, 0.0f, 0.0f))
+                0.5f
+                99u
+                InstanceFlags.Unlit
+        )
+
+        let meshPickPass =
+            ScenePass.create cam
+            |> ScenePass.withBatches [| opaqueMeshBatch; invisibleMeshBatch |]
+
+        let! meshHit = ctx.PickAsync (32, 32, meshPickPass)
+
+        let discs = ctx.CreateDiscBatch ()
+
+        discs.UpdateDiscs
+            [|
+                DiscInstance3D.create
+                    (Vector3 (0.0f, 0.0f, 1.0f))
+                    14.0f
+                    (RgbaColor (1.0f, 0.0f, 0.0f, 0.0f))
+                    0.0f
+                    0.0f
+                    0.0f
+                    0.0f
+                    98u
+                    InstanceFlags.None
+                DiscInstance3D.create Vector3.Zero 14.0f (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f)) 0.0f 0.0f 0.0f 0.0f 42u InstanceFlags.None
+            |]
+
+        let discPickPass =
+            ScenePass.create cam
+            |> ScenePass.withDiscs [| discs |]
+
+        let! discHit = ctx.PickAsync (32, 32, discPickPass)
+
+        let result =
+            {|
+                backend = ctx.BackendName
+                meshPickId = (pickResult 32 32 meshHit).pickId
+                discPickId = (pickResult 32 32 discHit).pickId
+            |}
+
+        ctx.Dispose ()
+        return result
+    }
+
+/// <summary>
+/// Verifies <c>InstanceFlags.ExactColor</c> bypasses Reinhard tone-mapping and gamma curve to emit exact sRGB bytes,
+/// while <c>InstanceFlags.Unlit</c> alone keeps the tone-mapped output.
+/// </summary>
+let exactColorCheck (canvas: obj) (backend: string) =
+    jsAsync {
+        let! ctx = WgpuContext.CreateAsync (canvas, 64, 64, backend = backendOf backend)
+        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+        let boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+        let batch = ctx.CreateBatch boxMesh
+        let pureGreen = RgbaColor (0.0f, 1.0f, 0.0f, 1.0f)
+        let mid = RgbaColor (0.2f, 0.4f, 0.8f, 1.0f)
+
+        let pass =
+            ScenePass.create cam
+            |> ScenePass.withClear RgbaColor.black
+            |> ScenePass.withBatches [| batch |]
+
+        batch.SetSingle (
+            Instance3D.trs Vector3.Zero 0.0f (Vector3 (2.0f, 2.0f, 0.2f)) pureGreen 0.5f 1u (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+        )
+
+        ctx.Render pass |> ignore
+        let! exactPixels = ctx.ReadPixelsAsync ()
+
+        batch.SetSingle (Instance3D.trs Vector3.Zero 0.0f (Vector3 (2.0f, 2.0f, 0.2f)) mid 0.5f 1u (InstanceFlags.Unlit ||| InstanceFlags.ExactColor))
+
+        ctx.Render pass |> ignore
+        let! midPixels = ctx.ReadPixelsAsync ()
+
+        batch.SetSingle (Instance3D.trs Vector3.Zero 0.0f (Vector3 (2.0f, 2.0f, 0.2f)) pureGreen 0.5f 1u InstanceFlags.Unlit)
+        ctx.Render pass |> ignore
+        let! unlitPixels = ctx.ReadPixelsAsync ()
+
+        let result =
+            {|
+                backend = ctx.BackendName
+                flags =
+                    [|
+                        InstanceFlags.None
+                        InstanceFlags.Unlit
+                        InstanceFlags.Selected
+                        InstanceFlags.IgnoreSectionPlane
+                        InstanceFlags.ExactColor
+                        InstanceFlags.UseColorLut
+                    |]
+                exactGreen = pixel exactPixels 64 32 32
+                exactMid = pixel midPixels 64 32 32
+                unlitGreen = pixel unlitPixels 64 32 32
+            |}
+
+        ctx.Dispose ()
+        return result
+    }
+
+/// <summary>
+/// Verifies <c>DrawBeforeLines</c> renders backdrop <c>AlphaBlend</c> panels before <c>LineBatch</c> hairlines
+/// while <c>drawBeforeLines = false</c> renders them after.
+/// </summary>
+let drawBeforeLinesCheck (canvas: obj) (backend: string) =
+    jsAsync {
+        let! ctx = WgpuContext.CreateAsync (canvas, 64, 64, backend = backendOf backend)
+        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+        let boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+        let defaultBatch = ctx.CreateBatch boxMesh
+
+        let beforeBatch =
+            ctx.CreateBatch (boxMesh, BlendMode.AlphaBlend, true, drawBeforeLines = true)
+
+        let afterBatch =
+            ctx.CreateBatch (boxMesh, BlendMode.AlphaBlend, true, drawBeforeLines = false)
+
+        let panelInst =
+            Instance3D.trs
+                Vector3.Zero
+                0.0f
+                (Vector3 (2.8f, 2.8f, 0.1f))
+                (RgbaColor (0.0f, 0.0f, 0.4f, 0.55f))
+                0.5f
+                1u
+                (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+
+        beforeBatch.SetSingle panelInst
+        afterBatch.SetSingle panelInst
+
+        let lines = ctx.CreateLineBatch ()
+
+        lines.UpdateVertices
+            [|
+                LineVertex3D (Vector3 (-1.4f, 0.0f, 0.0f), RgbaColor.white)
+                LineVertex3D (Vector3 (1.4f, 0.0f, 0.0f), RgbaColor.white)
+            |]
+
+        let brightestRedNearCenter (pixels: byte array) =
+            let mutable best = 0
+
+            for y = 28 to 36 do
+                let p = pixel pixels 64 32 y
+
+                if p[0] > best then
+                    best <- p[0]
+
+            best
+
+        ScenePass.create cam
+        |> ScenePass.withClear RgbaColor.black
+        |> ScenePass.withBatches [| beforeBatch |]
+        |> ScenePass.withLines [| lines |]
+        |> ctx.Render
+        |> ignore
+
+        let! pxBefore = ctx.ReadPixelsAsync ()
+
+        ScenePass.create cam
+        |> ScenePass.withClear RgbaColor.black
+        |> ScenePass.withBatches [| afterBatch |]
+        |> ScenePass.withLines [| lines |]
+        |> ctx.Render
+        |> ignore
+
+        let! pxAfter = ctx.ReadPixelsAsync ()
+
+        let result =
+            {|
+                backend = ctx.BackendName
+                flags =
+                    [|
+                        defaultBatch.DrawBeforeLines
+                        beforeBatch.DrawBeforeLines
+                        afterBatch.DrawBeforeLines
+                    |]
+                redWithBefore = brightestRedNearCenter pxBefore
+                redWithAfter = brightestRedNearCenter pxAfter
+            |}
+
+        ctx.Dispose ()
+        return result
+    }
+
+/// <summary>
+/// Verifies <c>WgpuContext.CreateSingleBatch</c> populates slot 0 immediately and renders/picks without
+/// a separate <c>UpdateInstances</c> call.
+/// </summary>
+let createSingleBatchCheck (canvas: obj) (backend: string) =
+    jsAsync {
+        let! ctx = WgpuContext.CreateAsync (canvas, 64, 64, backend = backendOf backend)
+        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+        let boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+        let defaultSingle = ctx.CreateSingleBatch boxMesh
+
+        let customInst =
+            Instance3D.trs
+                Vector3.Zero
+                0.0f
+                (Vector3 (2.0f, 2.0f, 0.2f))
+                (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f))
+                0.3f
+                77u
+                (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+
+        let customSingle =
+            ctx.CreateSingleBatch (boxMesh, blendMode = BlendMode.Opaque, doubleSided = false, drawBeforeLines = false, instance = customInst)
+
+        let curriedSingle =
+            ctx
+            |> WgpuContext.createSingleBatch customInst boxMesh
+
+        let pass =
+            ScenePass.create cam
+            |> ScenePass.withClear RgbaColor.black
+            |> ScenePass.withBatches [| curriedSingle |]
+
+        ctx.Render pass |> ignore
+        let! pixels = ctx.ReadPixelsAsync ()
+        let! hit = ctx.PickAsync (32, 32, pass)
+
+        let result =
+            {|
+                backend = ctx.BackendName
+                defaultCount = defaultSingle.Count
+                customCount = if customSingle.Count = 1 then curriedSingle.Count else -1
+                centre = pixel pixels 64 32 32
+                pickId = (pickResult 32 32 hit).pickId
+            |}
+
+        ctx.Dispose ()
+        return result
+    }
+
+/// <summary>
+/// Verifies <c>ViewportRect</c>, <c>ScenePass.withViewport</c>, <c>RenderPasses</c>, and <c>PickPassesAsync</c>
+/// across side-by-side viewports, overlapping clear vs color-preserving passes, disc viewport scaling, and bounds.
+/// </summary>
+let viewportRenderPassesCheck (canvas: obj) (backend: string) =
+    jsAsync {
+        let! ctx = WgpuContext.CreateAsync (canvas, 320, 200, backend = backendOf backend)
+        let cam = Camera3D.orthographic Vector3.Zero 0.0f 0.0f 1.5f 5.0f
+        let boxMesh = ctx.UploadMesh (Primitives.unitBox ())
+
+        let leftBatch =
+            ctx.CreateSingleBatch (
+                boxMesh,
+                instance =
+                    Instance3D.trs
+                        Vector3.Zero
+                        0.0f
+                        (Vector3 (1.2f, 1.2f, 0.2f))
+                        (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f))
+                        0.5f
+                        101u
+                        (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+            )
+
+        let rightBatch =
+            ctx.CreateSingleBatch (
+                boxMesh,
+                instance =
+                    Instance3D.trs
+                        Vector3.Zero
+                        0.0f
+                        (Vector3 (1.2f, 1.2f, 0.2f))
+                        (RgbaColor (1.0f, 1.0f, 0.0f, 1.0f))
+                        0.5f
+                        202u
+                        (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+            )
+
+        let smallCyanBehindBatch =
+            ctx.CreateSingleBatch (
+                boxMesh,
+                instance =
+                    Instance3D.trs
+                        (Vector3 (0.0f, 0.0f, -1.0f))
+                        0.0f
+                        (Vector3 (0.4f, 0.4f, 0.2f))
+                        (RgbaColor (0.0f, 1.0f, 1.0f, 1.0f))
+                        0.5f
+                        303u
+                        (InstanceFlags.Unlit ||| InstanceFlags.ExactColor)
+            )
+
+        let leftVp = ViewportRect.create 0 0 160 200
+        let rightVp = ViewportRect.create 160 0 160 200
+        let leftClear = RgbaColor (0.4f, 0.0f, 0.0f, 1.0f)
+        let rightClear = RgbaColor (0.0f, 0.0f, 0.4f, 1.0f)
+
+        let leftPass =
+            ScenePass.create cam
+            |> ScenePass.withClear leftClear
+            |> ScenePass.withViewport leftVp
+            |> ScenePass.withBatches [| leftBatch |]
+
+        let rightPass =
+            ScenePass.create cam
+            |> ScenePass.withClear rightClear
+            |> ScenePass.withViewport rightVp
+            |> ScenePass.withBatches [| rightBatch |]
+
+        let passes = [| leftPass; rightPass |]
+        let callsBefore = ctx.RenderCalls
+        let framesBefore = ctx.FramesDelivered
+        let splitMetrics = passes |> WgpuContext.renderPasses ctx
+        let callsAfter = ctx.RenderCalls
+        let framesAfter = ctx.FramesDelivered
+        let! splitPixels = ctx.ReadPixelsAsync ()
+
+        let! leftOutPick = ctx.PickAsync (240, 100, leftPass)
+        let! rightOutPick = ctx.PickAsync (80, 100, rightPass)
+        let! pickLeft = passes |> WgpuContext.pickPassesAsync 80 100 ctx
+        let! pickRight = ctx.PickPassesAsync (240, 100, passes)
+        let! pickOutside = ctx.PickPassesAsync (-1, 100, passes)
+
+        // Disc billboard pixel size inside a sub-viewport whose height (100) is half the canvas height (200)
+        let subDiscs = ctx.CreateDiscBatch ()
+
+        subDiscs.UpdateDiscs
+            [|
+                DiscInstance3D.create Vector3.Zero 10.0f (RgbaColor (0.0f, 1.0f, 0.0f, 1.0f)) 0.0f 0.0f 0.0f 0.0f 404u InstanceFlags.Unlit
+            |]
+
+        let subDiscPass =
+            ScenePass.create cam
+            |> ScenePass.withClear RgbaColor.black
+            |> ScenePass.withViewport (ViewportRect.create 0 0 160 100)
+            |> ScenePass.withDiscs [| subDiscs |]
+
+        ctx.Render subDiscPass |> ignore
+        let! subDiscPixels = ctx.ReadPixelsAsync ()
+
+        // Overlapping passes: ClearColor = ValueSome clears only overlayVp; ClearColor = ValueNone preserves color & clears depth
+        let fullPass =
+            ScenePass.create cam
+            |> ScenePass.withClear leftClear
+            |> ScenePass.withBatches [| leftBatch |]
+
+        let overlayVp = ViewportRect.create 100 60 120 80
+
+        let overlayClearPass =
+            ScenePass.create cam
+            |> ScenePass.withClear rightClear
+            |> ScenePass.withViewport overlayVp
+            |> ScenePass.withBatches [| rightBatch |]
+
+        let overlapClear = [| fullPass; overlayClearPass |]
+
+        ctx.RenderPasses (ReadOnlySpan<ScenePass>(overlapClear))
+        |> ignore
+
+        let! overlapClearPixels = ctx.ReadPixelsAsync ()
+
+        let! overlapClearPickCenter =
+            ctx.PickPassesAsync (160, 100, ReadOnlySpan<ScenePass>(overlapClear))
+
+        let! overlapClearPickCorner = ctx.PickPassesAsync (125, 70, overlapClear)
+
+        let overlayPreservePass =
+            ScenePass.create cam
+            |> ScenePass.withViewport overlayVp
+            |> ScenePass.withBatches [| smallCyanBehindBatch |]
+
+        let overlapPreserve = [| fullPass; overlayPreservePass |]
+        ctx.RenderPasses overlapPreserve |> ignore
+        let! overlapPreservePixels = ctx.ReadPixelsAsync ()
+        let! overlapPreservePick = ctx.PickPassesAsync (160, 100, overlapPreserve)
+
+        // Clamped out-of-bounds and completely offscreen viewports + empty RenderPasses
+        let clippedPass =
+            ScenePass.create cam
+            |> ScenePass.withViewport (ViewportRect.create 280 160 100 100)
+            |> ScenePass.withBatches [| rightBatch |]
+
+        let clippedMetrics = ctx.RenderPasses [| fullPass; clippedPass |]
+
+        let offscreenPass =
+            ScenePass.create cam
+            |> ScenePass.withClear RgbaColor.black
+            |> ScenePass.withViewport (ViewportRect.create 400 400 40 40)
+            |> ScenePass.withBatches [| rightBatch |]
+
+        let offscreenMetrics = ctx.Render offscreenPass
+
+        let emptyMetrics =
+            ctx.RenderPasses ([||], clearColor = RgbaColor (0.0f, 0.4f, 0.0f, 1.0f))
+
+        let! emptyPixels = ctx.ReadPixelsAsync ()
+
+        let nullPassesThrows =
+            catchesNullArg (fun () ->
+                ctx.RenderPasses (Unchecked.defaultof<ScenePass array>)
+                |> ignore)
+            && catchesNullArg (fun () ->
+                ctx.PickPassesAsync (0, 0, Unchecked.defaultof<ScenePass array>)
+                |> ignore)
+
+        let backendName = ctx.BackendName
+        ctx.Dispose ()
+
+        let disposedThrows =
+            catchesDisposed "WgpuContext" (fun () -> ctx.CreateSingleBatch boxMesh |> ignore)
+            && catchesDisposed "WgpuContext" (fun () -> ctx.RenderPasses passes |> ignore)
+            && catchesDisposed "WgpuContext" (fun () -> ctx.PickPassesAsync (0, 0, passes) |> ignore)
+
+        return
+            {|
+                backend = backendName
+                splitDrawCalls = splitMetrics.DrawCalls
+                splitInstances = splitMetrics.InstanceCount
+                renderCallsDelta = callsAfter - callsBefore
+                framesDelta = framesAfter - framesBefore
+                leftBg = pixel splitPixels 320 10 10
+                leftObj = pixel splitPixels 320 80 100
+                rightBg = pixel splitPixels 320 310 10
+                rightObj = pixel splitPixels 320 240 100
+                leftOutPickId = (pickResult 240 100 leftOutPick).pickId
+                rightOutPickId = (pickResult 80 100 rightOutPick).pickId
+                pickLeftId = (pickResult 80 100 pickLeft).pickId
+                pickRightId = (pickResult 240 100 pickRight).pickId
+                pickOutsideId = (pickResult -1 100 pickOutside).pickId
+                discRight7 = pixel subDiscPixels 320 87 50
+                discDown7 = pixel subDiscPixels 320 80 57
+                discDown15 = pixel subDiscPixels 320 80 65
+                overlapOuter = pixel overlapClearPixels 320 10 10
+                overlapClearCorner = pixel overlapClearPixels 320 125 70
+                overlapClearCenter = pixel overlapClearPixels 320 160 100
+                overlapClearPickCenterId = (pickResult 160 100 overlapClearPickCenter).pickId
+                overlapClearPickCornerId = (pickResult 125 70 overlapClearPickCorner).pickId
+                overlapPreserveCorner = pixel overlapPreservePixels 320 125 70
+                overlapPreserveCenter = pixel overlapPreservePixels 320 160 100
+                overlapPreservePickId = (pickResult 160 100 overlapPreservePick).pickId
+                clippedDraws = clippedMetrics.DrawCalls
+                offscreenDraws = offscreenMetrics.DrawCalls
+                emptyDraws = emptyMetrics.DrawCalls
+                emptyPixel = pixel emptyPixels 320 10 10
+                nullPassesThrows = nullPassesThrows
+                disposedThrows = disposedThrows
+            |}
+    }

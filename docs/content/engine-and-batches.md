@@ -75,7 +75,7 @@ let pass =
 let metrics: FrameMetrics = pass |> WgpuContext.render ctx
 ```
 
-`FrameMetrics` reports `GpuRenderMs`, `ReadbackMs`, `DrawCalls`, `InstanceCount`, and `TriangleCount`.
+`FrameMetrics` reports `GpuRenderMs`, `ReadbackMs`, `DrawCalls`, `InstanceCount`, and `TriangleCount`. Each `ScenePass` draws in five fixed stages: `Opaque` `InstanceBatch` → `AlphaBlend` (`DrawBeforeLines = true`) → `LineBatch` → `AlphaBlend` (`DrawBeforeLines = false`) → `DiscBatch`.
 
 ## 1×1 hardware GPU picking
 

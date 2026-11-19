@@ -127,3 +127,56 @@ test("Camera3D.orthographic and orbitPerspectiveness keep 0 < NearPlane < distan
     assert.ok(Math.abs(c.projected[1] - 100) < tol, `${label}: expected center Y ~ 100, got ${c.projected[1]}`);
   }
 });
+
+test("RgbaColor.black, transparent, lerp, and toHex handle clamping, NaN, and round-trips", () => {
+  const r = checks.colorHelpers();
+  assert.deepEqual([...r.black], [0, 0, 0, 1]);
+  assert.deepEqual([...r.transparent], [0, 0, 0, 0]);
+  assert.equal(r.lerpZero, true);
+  assert.equal(r.lerpOne, true);
+  assert.equal(r.lerpNeg, true);
+  assert.equal(r.lerpOver, true);
+  assert.equal(r.lerpNaN, true);
+  assert.ok(Math.abs(r.lerpMid[0] - 0.5) < 1e-6);
+  assert.ok(Math.abs(r.lerpMid[1] - 0.3) < 1e-6);
+  assert.ok(Math.abs(r.lerpMid[2] - 0.8) < 1e-6);
+  assert.ok(Math.abs(r.lerpMid[3] - 0.6) < 1e-6);
+  assert.equal(r.hexRed, "#ff0000");
+  assert.equal(r.hexClamped, "#00ff00");
+  assert.equal(r.hexTranslucent, "#00ff0080");
+  assert.equal(r.roundTripMatches, true);
+});
+
+test("MeshData.empty, MeshData.merge, and MeshBuilder.AddRawMesh preserve geometry and offset indices", () => {
+  const r = checks.meshMerge();
+  assert.deepEqual([...r.emptyCounts], [0, 0]);
+  assert.deepEqual([...r.nullCounts], [0, 0]);
+  assert.equal(r.verticesMatch, true);
+  assert.equal(r.indicesMatch, true);
+  assert.equal(r.rawMatches, true);
+  assert.equal(r.nullRawThrows, true);
+});
+
+test("Primitives.convexPolyhedron and MeshBuilder.AddConvexPolyhedron produce outward CCW triangles and normals for mixed CW and CCW faces", () => {
+  const r = checks.convexPolyhedronCheck();
+  assert.equal(r.nullVertsThrows, true);
+  assert.equal(r.nullFacesThrows, true);
+  assert.equal(r.vertexCount, 24);
+  assert.equal(r.indexCount, 36);
+  assert.equal(r.allColorsMatch, true);
+  assert.equal(r.allTrianglesValid, true);
+  assert.equal(r.poolMatches, true);
+});
+
+test("ViewportRect.create validates dimensions and Contains checks half-open bounds", () => {
+  const r = checks.viewportRectCheck();
+  assert.equal(r.negXThrows, true);
+  assert.equal(r.negYThrows, true);
+  assert.equal(r.zeroWThrows, true);
+  assert.equal(r.zeroHThrows, true);
+  assert.equal(r.leftOrigin, true);
+  assert.equal(r.leftMaxInside, true);
+  assert.equal(r.leftRightEdge, false);
+  assert.equal(r.rightLeftEdge, true);
+  assert.equal(r.rightOuterEdge, false);
+});
