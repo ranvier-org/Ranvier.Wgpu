@@ -1,5 +1,5 @@
 ---
-last_commit_released: 78297af07f6b0c7b5bf25845d6247e0546e03166
+last_commit_released: 7164e7ae5993e0c24be26a5e4db297ce08ec37c9
 depends_on:
   - ../Ranvier.Wgpu/
 updaters:
@@ -14,6 +14,14 @@ updaters:
 # Changelog
 
 This changelog is generated from conventional commits by [EasyBuild.ShipIt](https://github.com/easybuild-org/EasyBuild.ShipIt).
+
+## 0.3.1 - 2026-11-23
+
+### 🐞 Bug Fixes
+
+* *(deps)* Align Ranvier.View.WebCore.Sdl 0.2.3 and Fickl 0.13.0 ([7164e7a](https://github.com/ranvier-org/Ranvier.Wgpu/commit/7164e7ae5993e0c24be26a5e4db297ce08ec37c9))
+
+<strong><small>[View changes on Github](https://github.com/ranvier-org/Ranvier.Wgpu/compare/78297af07f6b0c7b5bf25845d6247e0546e03166..7164e7ae5993e0c24be26a5e4db297ce08ec37c9)</small></strong>
 
 ## 0.3.0 - 2026-11-19
 
