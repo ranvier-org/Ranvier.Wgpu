@@ -50,7 +50,7 @@
   <!-- Fickl compiles a library package from the sources in its fable/ folder, and reads the Compile items of
        the project file there without evaluating it. It takes a Compile item's Link element as the file's
        place in that folder, so the four shared files are packed beside the others and keep their Link. It
-       needs Fickl 0.11.0 or later, the first release with System.Numerics vectors and spans. -->
+       needs Fickl 0.13.0 or later. -->
   <ItemGroup>
     <Content Include="Fable.Ranvier.Wgpu.fsproj;*.fs" PackagePath="fable/" />
     <Content Include="../Ranvier.Wgpu/Types.fs;../Ranvier.Wgpu/Primitives.fs;../Ranvier.Wgpu/Shaders.fs;../Ranvier.Wgpu/ScenePass.fs" PackagePath="fable/" Visible="false" />
@@ -59,7 +59,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Fickl.Core" Version="0.11.0" />
+    <PackageReference Include="Fickl.Core" Version="0.13.0" />
     <!-- The package's minimum FSharp.Core: the version in the first .NET 10 SDK. -->
     <PackageReference Update="FSharp.Core" Version="10.0.100" />
   </ItemGroup>

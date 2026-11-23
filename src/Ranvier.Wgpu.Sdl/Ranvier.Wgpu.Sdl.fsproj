@@ -33,12 +33,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- 0.2.0 is the first version that requires FSharp.Core 10.0.100 rather than 10.1.401. -->
-    <PackageReference Include="Ranvier.View.WebCore.Sdl$(RanvierPackageSuffix)" Version="0.2.0" />
+    <PackageReference Include="Ranvier.View.WebCore.Sdl$(RanvierPackageSuffix)" Version="0.2.3" />
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The FSharp.Core floor of Ranvier.View.WebCore.Sdl 0.2.0: the version in the first .NET 10 SDK. -->
+    <!-- The FSharp.Core floor of Ranvier.View.WebCore.Sdl 0.2.3: the version in the first .NET 10 SDK. -->
     <PackageReference Update="FSharp.Core" Version="10.0.100" />
   </ItemGroup>
 

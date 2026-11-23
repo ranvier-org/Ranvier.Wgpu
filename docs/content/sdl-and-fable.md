@@ -66,7 +66,7 @@ Disposing `WgpuSdlSurface` detaches the element surface and releases bridge hand
 
 ## Browser WebGPU & WebGL2 (`Fable.Ranvier.Wgpu`)
 
-`Fable.Ranvier.Wgpu` compiles the shared `Ranvier.Wgpu` F# scene files (`Types.fs`, `Primitives.fs`, `Shaders.fs`, `ScenePass.fs`) to JavaScript ES modules via [Fickl](https://github.com/shayanhabibi/fickl) (`0.11.0+`), rendering on WebGPU where available and automatically falling back to WebGL2.
+`Fable.Ranvier.Wgpu` compiles the shared `Ranvier.Wgpu` F# scene files (`Types.fs`, `Primitives.fs`, `Shaders.fs`, `ScenePass.fs`) to JavaScript ES modules via [Fickl](https://github.com/shayanhabibi/fickl) (`0.13.0+`), rendering on WebGPU where available and automatically falling back to WebGL2.
 
 ```sh
 dotnet add package Fable.Ranvier.Wgpu
