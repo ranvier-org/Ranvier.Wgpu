@@ -73,7 +73,7 @@ not draw the stock shader. A page that should run on both backends passes both.
 
 ## Requirements
 
-- Fickl 0.11.0 or later. Earlier releases cannot compile `System.Numerics` vectors and spans.
+- Fickl 0.13.0 or later. Earlier releases below 0.11.0 cannot compile `System.Numerics` vectors and spans.
 - .NET 10 (`net10.0`) and `FSharp.Core` 10.0.100 or later, which ships with the first .NET 10 SDK, so any .NET 10
   SDK builds against this package. Version 0.1.0 required `FSharp.Core` 10.1.401 (.NET SDK 10.0.401).
 - A browser with WebGPU or WebGL2.

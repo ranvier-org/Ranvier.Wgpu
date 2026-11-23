@@ -34,8 +34,8 @@ use subscription =
 
 - `FSharp.Core` 10.0.100 or later, which ships with the first .NET 10 SDK, so any .NET 10 SDK builds against
   this package. Versions up to 0.2.0 required `FSharp.Core` 10.1.401 (.NET SDK 10.0.401).
-- `Ranvier.View.WebCore.Sdl` 0.2.0 or later. An app that also references `Ranvier.View.WebCore.Hmr` needs
-  0.1.2 or later of it, which is built against that version.
+- `Ranvier.View.WebCore.Sdl` 0.2.3 or later. An app that also references `Ranvier.View.WebCore.Hmr` needs
+  0.1.5 or later of it, which is built against that version.
 
 ## Custom shaders
 
